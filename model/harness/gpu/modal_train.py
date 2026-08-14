@@ -261,7 +261,7 @@ def _run_training(cfg):
     lr_max = cfg.get("lr", 8e-3)
     total_steps = cfg["train_tokens"] // (batch * ctx)
     opt = torch.optim.AdamW(model.parameters(), lr=lr_max, weight_decay=0.01)
-    warmup = min(500, total_steps // 20)
+    warmup = cfg.get("warmup", min(500, total_steps // 20))
     val_every = cfg.get("val_every", 1000)
     ckpt_every = cfg.get("ckpt_every", 0)
     kd_alpha = cfg.get("kd_alpha", 0.5)
