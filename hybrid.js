@@ -61,11 +61,13 @@ export function decompressHybrid (payload, alphabet, model) {
   const number = stringToNumber(payload, alphabet);
   const version = payloadVersion(number);
   if (version === 0) return decompressNumber(number);
-  if (version === 1) {
-    if (!model) throw "This link requires the model file to decode.";
-    return neuralDecompressNumber(model, number);
+  // Neural payloads name the model that made them; the caller is
+  // responsible for loading the matching model file (the latest one
+  // for current links, model/url-model-v<N>.bin for older versions)
+  if (!model) {
+    throw `This link requires model version ${version} to decode.`;
   }
-  throw `Unsupported payload version: ${version}.`;
+  return neuralDecompressNumber(model, number);
 }
 
 /**

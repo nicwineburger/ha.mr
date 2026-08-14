@@ -201,11 +201,21 @@ inputLinkElement.addEventListener("input", updateOutput);
   if (payload && payload.trim()) {
     try {
       // Classic payloads redirect immediately; neural ones need the
-      // model, so wait for its download to settle first
-      if (payloadSchemeVersion(payload, alphabet) >= 1) {
+      // model matching their payload version. The latest model is
+      // already being fetched; links made by older models lazy-load
+      // their archived model file instead.
+      let decodeModel = null;
+      const version = payloadSchemeVersion(payload, alphabet);
+      if (version >= 1) {
         await modelReady;
+        decodeModel = model;
+        if (!decodeModel || decodeModel.linkVersion !== version) {
+          const response = await fetch(`/model/url-model-v${version}.bin`);
+          if (!response.ok) throw `HTTP ${response.status} fetching model version ${version}`;
+          decodeModel = new URLModel(await response.arrayBuffer());
+        }
       }
-      const target = decompressHybrid(payload, alphabet, model);
+      const target = decompressHybrid(payload, alphabet, decodeModel);
       window.location.href = target;
       return;
     } catch (e) {

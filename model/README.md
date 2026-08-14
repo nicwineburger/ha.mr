@@ -63,8 +63,28 @@ hardware/library versions. That's fine: the model file itself is the
 source of truth, and determinism is only required of *inference*, which
 `neural.js` guarantees for any given model file.
 
-**Compatibility note:** replacing `url-model.bin` with a retrained
-model breaks all previously issued neural (version 1) links — the
-decoder must use the exact model that encoded them. Classic (version 0)
-links are unaffected. If you retrain, either keep the old model
-deployed for decoding or accept the break on your own deployment.
+## Versioning and the upgrade path
+
+Neural payloads can only be decoded by the exact model that encoded
+them, so every model carries a `linkVersion` in its header, and every
+payload records its model's version in the payload's unary version
+marker. Upgrading to a retrained model **never breaks old links** if
+you follow the path:
+
+1. Train the new model with `link_version` bumped to the next number
+   (see `harness/train-final.py`).
+2. Archive the current model: `url-model.bin` → `url-model-v<old>.bin`.
+3. Ship the new model as `url-model.bin` (the stable "latest" URL).
+
+Encoding always uses the latest model. Decoding reads the payload's
+version: if it matches the latest model, that (already fetched) model
+is used; otherwise `url-model-v<N>.bin` is lazy-loaded — visitors only
+ever download the archived file when opening an old link, so retained
+versions cost new users nothing. Update the pinned vectors in
+`test/neural.test.mjs` for the new model, keeping the old model's
+vectors green forever.
+
+**Never replace `url-model.bin` in place without bumping
+`linkVersion` and archiving the old file** — that is the one move that
+breaks issued links, and the pinned-vector tests exist to catch it.
+Classic (version 0) links never depend on any model.

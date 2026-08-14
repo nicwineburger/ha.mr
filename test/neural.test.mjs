@@ -194,6 +194,44 @@ test("pinned payloads stay stable", () => {
   }
 });
 
+/** Rebuilds a model buffer with a different linkVersion in its header. */
+function withLinkVersion (buffer, version) {
+  const view = new DataView(buffer);
+  const headerLength = view.getUint32(0, true);
+  const header = JSON.parse(
+    new TextDecoder().decode(new Uint8Array(buffer, 4, headerLength)));
+  header.linkVersion = version;
+  const hb = new TextEncoder().encode(JSON.stringify(header));
+  const out = new Uint8Array(4 + hb.length + buffer.byteLength - 4 - headerLength);
+  new DataView(out.buffer).setUint32(0, hb.length, true);
+  out.set(hb, 4);
+  out.set(new Uint8Array(buffer, 4 + headerLength), 4 + hb.length);
+  return out.buffer;
+}
+
+test("payload versions route to the matching model", async () => {
+  // A future retrained model ships with the next linkVersion; its
+  // payloads carry that version and refuse to decode with any other
+  // model. This is the upgrade path that keeps old links working.
+  const raw = (await readFile(new URL("../model/url-model.bin", import.meta.url))).buffer;
+  const modelV3 = new URLModel(withLinkVersion(raw, 3));
+  assert.equal(modelV3.linkVersion, 3);
+
+  const link = "https://www.example.com/versioned/path";
+  const payload = compressHybrid(link, outputAlphabetASCII, modelV3);
+  assert.equal(payloadSchemeVersion(payload, outputAlphabetASCII), 3);
+  assert.equal(decompressHybrid(payload, outputAlphabetASCII, modelV3), link);
+
+  // The version-1 model must refuse a version-3 payload, and vice
+  // versa - silent cross-decoding would produce garbage URLs
+  assert.throws(() => decompressHybrid(payload, outputAlphabetASCII, model),
+    /version/);
+  const payloadV1 = compressHybrid(link, outputAlphabetASCII, model);
+  assert.equal(payloadSchemeVersion(payloadV1, outputAlphabetASCII), 1);
+  assert.throws(() => decompressHybrid(payloadV1, outputAlphabetASCII, modelV3),
+    /version/);
+});
+
 test("neural payloads require the model to decode", () => {
   const number = neuralCompressToNumber(model, "https://www.example.com/x");
   assert.notEqual(number, null);

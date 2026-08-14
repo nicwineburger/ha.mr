@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
-import { compressHybrid, decompressHybrid } from "./hybrid.js";
+import { compressHybrid, decompressHybrid, payloadSchemeVersion } from "./hybrid.js";
 import { URLModel } from "./neural.js";
 import {
   outputAlphabetASCII,
@@ -10,10 +10,13 @@ import {
 
 // Load the neural model shipped alongside the CLI; fall back to
 // classic-only compression if it's unavailable
+async function loadModel (file) {
+  const buffer = await readFile(new URL(file, import.meta.url));
+  return new URLModel(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+}
 let model = null;
 try {
-  const buffer = await readFile(new URL("./model/url-model.bin", import.meta.url));
-  model = new URLModel(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+  model = await loadModel("./model/url-model.bin");
 } catch (e) {
   console.error("Warning: neural model unavailable, using classic compression only.");
 }
@@ -47,8 +50,20 @@ if (payload) {
   const isQRCode = payload[0] === "/";
   payload = payload.slice(1);
   const useEmoji = Array.from(payload).some(c => !outputAlphabetASCII.includes(c));
-  if (isQRCode) console.log(decompressHybrid(payload, outputAlphabetQR, model));
-  else console.log(decompressHybrid(payload, useEmoji ? outputAlphabetEmoji : outputAlphabetASCII, model));
+  const alpha = isQRCode ? outputAlphabetQR
+    : useEmoji ? outputAlphabetEmoji : outputAlphabetASCII;
+  // Links made by older models decode with their archived model file
+  let decodeModel = model;
+  const version = payloadSchemeVersion(payload, alpha);
+  if (version >= 1 && (!decodeModel || decodeModel.linkVersion !== version)) {
+    try {
+      decodeModel = await loadModel(`./model/url-model-v${version}.bin`);
+    } catch (e) {
+      console.error(`This link requires model version ${version} (model/url-model-v${version}.bin).`);
+      process.exit(3);
+    }
+  }
+  console.log(decompressHybrid(payload, alpha, decodeModel));
   process.exit(0);
 }
 

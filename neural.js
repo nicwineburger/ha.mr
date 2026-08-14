@@ -151,6 +151,14 @@ export class URLModel {
     this.heads = header.heads;
     this.mlpDim = header.mlpDim;
     this.maxLen = header.maxLen;
+    /*
+     * The payload version this model encodes/decodes. Each retrained
+     * model gets the next version; payloads carry the version in
+     * their unary marker, so links made by older models stay
+     * decodable as long as the older model file stays deployed
+     * (model/url-model-v<N>.bin). Absent in early files = version 1.
+     */
+    this.linkVersion = header.linkVersion || 1;
 
     this.tensors = {};
     let offset = 4 + headerLength;
@@ -333,9 +341,10 @@ function modelProbabilities (model) {
 
 /*
  * Payload format (bits from least significant):
- *   1, 0     - unary version marker: version 1 = neural coding
- *              (classic payloads end in version 0 and are handled by
- *              compress.js unchanged)
+ *   marker   - unary payload version: N one-bits then a zero, where
+ *              N is the encoding model's linkVersion (classic
+ *              payloads are version 0 - a single zero bit - and are
+ *              handled by compress.js unchanged)
  *   isHTTPS  - 1 bit
  *   payload  - arithmetic-coded bits of the scheme-less URL text,
  *              preceded by a sentinel 1 bit to preserve leading zeros
@@ -373,7 +382,9 @@ export function neuralCompressToNumber (model, input) {
     number = (number << 1n) | BigInt(bit);
   }
   number = (number << 1n) | (isHTTPS ? 1n : 0n);
-  number = (number << 2n) | 0b01n; // Version 1 marker
+  // Unary version marker matching the model that encoded this payload
+  const version = BigInt(model.linkVersion);
+  number = (number << (version + 1n)) | ((1n << version) - 1n);
   return number;
 }
 
@@ -384,8 +395,16 @@ export function neuralCompressToNumber (model, input) {
  * @returns {string} Full link
  */
 export function neuralDecompressNumber (model, number) {
-  if ((number & 0b11n) !== 0b01n) throw "Not a neural payload.";
-  number >>= 2n;
+  let version = 0;
+  while (number & 1n) {
+    version ++;
+    number >>= 1n;
+  }
+  number >>= 1n;
+  if (version !== model.linkVersion) {
+    throw `Payload version ${version} needs model version ${version}, `
+      + `but this model is version ${model.linkVersion}.`;
+  }
   const isHTTPS = number & 1n;
   number >>= 1n;
 

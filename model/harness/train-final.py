@@ -21,7 +21,12 @@ SHIPPED_CONFIG = {
     "tokenizer": "vocab-1024.txt",
     "dim": 192, "layers": 5, "heads": 6, "mlp": 576, "ctx": 96,
     "train_tokens": 75000000,
-    "seed": 1234
+    "seed": 1234,
+    # The payload version this model's links carry. BUMP THIS for any
+    # retrained model, archive the previous url-model.bin as
+    # url-model-v<old>.bin, and keep both deployed - that's what keeps
+    # previously issued neural links decodable.
+    "link_version": 1
 }
 
 
@@ -45,6 +50,7 @@ def export(model, tok, cfg, path):
         "format": "hamr-url-model-v2",
         "vocab": tok.size, "dim": cfg["dim"], "layers": cfg["layers"],
         "heads": cfg["heads"], "mlpDim": cfg["mlp"], "maxLen": cfg["ctx"],
+        "linkVersion": cfg.get("link_version", 1),
         "tensors": tensors
     }
     if tok.max_len > 1:

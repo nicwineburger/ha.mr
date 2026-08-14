@@ -50,7 +50,7 @@ To run your own instance:
 2. Replace the contents of `CNAME` with your own domain, or delete the file if you're not using a custom domain.
 3. Serve the site from the **root** of the domain. Text links (`https://your.domain#...`) work from any path, but QR-code links carry their payload in the URL path and rely on the `404.html` fallback at the domain root to decode them.
 
-Links are only decodable by a deployment of this codebase, but they are not tied to the domain that created them: the payload format is identical everywhere, so a link's path/fragment can be decoded by any instance (or by the CLI). The one caveat is the neural model: version 1 payloads can only be decoded with the exact `model/url-model.bin` that encoded them, so don't swap that file for a retrained one unless you're prepared to break your own previously issued links (see [`model/README.md`](model/README.md)).
+Links are only decodable by a deployment of this codebase, but they are not tied to the domain that created them: the payload format is identical everywhere, so a link's path/fragment can be decoded by any instance (or by the CLI). The one caveat is the neural model: a neural payload can only be decoded by the model version that encoded it, so keep the `model/url-model*.bin` files as they are. Retrained models are an *additive* upgrade — the payload format is versioned, and old model files stay deployed to serve old links (see [`model/README.md`](model/README.md) for the exact procedure).
 
 For the command line tool, set the `HAMR_DOMAIN` environment variable to build and recognize short links on your domain:
 
