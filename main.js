@@ -1,9 +1,27 @@
-import { compress, decompress } from "./compress.js";
+import { compressHybrid, decompressHybrid, payloadSchemeVersion } from "./hybrid.js";
+import { URLModel } from "./neural.js";
 import {
   outputAlphabetASCII,
   outputAlphabetQR,
   outputAlphabetEmoji
 } from "./alphabets.js";
+
+/**
+ * The neural model loads in the background. Until it's ready (or if
+ * the file is missing), everything runs on the classic scheme.
+ */
+let model = null;
+const modelReady = (async () => {
+  try {
+    const response = await fetch("/model/url-model.bin");
+    if (!response.ok) throw `HTTP ${response.status}`;
+    model = new URLModel(await response.arrayBuffer());
+    // Upgrade whatever is currently displayed
+    updateOutput();
+  } catch (e) {
+    console.warn("Neural model unavailable, using classic compression only:", e);
+  }
+})();
 
 /**
  * The site adapts to whatever domain it's hosted on: output links and
@@ -63,11 +81,26 @@ const qrCodeCorrectionLevelContainer = document.querySelector("#qr-correct-level
 const qrCodeCorrectionLevelElement = document.querySelector("#qr-correct-level");
 qrCodeCorrectionLevelElement.addEventListener("change", updateOutput);
 
+/**
+ * Neural encoding takes a few hundred milliseconds, too slow to run on
+ * every keystroke. Each input change renders the classic result
+ * immediately, then upgrades to the hybrid (best-of-both) result once
+ * the input has been idle briefly.
+ */
+let neuralTimer = null;
 function updateOutput () {
+  renderOutput(null);
+  if (model) {
+    clearTimeout(neuralTimer);
+    neuralTimer = setTimeout(() => renderOutput(model), 200);
+  }
+}
+
+function renderOutput (activeModel) {
   const input = inputLinkElement.value.trim();
   try {
     const alphabet = settings.emoji ? outputAlphabetEmoji : outputAlphabetASCII;
-    const output = compress(input, alphabet);
+    const output = compressHybrid(input, alphabet, activeModel);
     let inputNormalized = input;
     if (input.startsWith("https://")) {
       inputNormalized = input.slice(8);
@@ -111,7 +144,7 @@ function updateOutput () {
       qrCodeCorrectionLevelContainer.style.display = "inline";
       // Uppercase keeps the QR code in alphanumeric mode; hostnames
       // only contain [a-z0-9.-], which all fit that character set
-      let qrCodeLink = `HTTP://${siteHost.toUpperCase()}/${compress(input, outputAlphabetQR)}`;
+      let qrCodeLink = `HTTP://${siteHost.toUpperCase()}/${compressHybrid(input, outputAlphabetQR, activeModel)}`;
       QRCode.toDataURL(qrCodeLink, {
         errorCorrectionLevel: errorCorrection,
         scale: 8
@@ -145,7 +178,7 @@ function updateOutput () {
 }
 inputLinkElement.addEventListener("input", updateOutput);
 
-(() => {
+(async () => {
   let payload = null;
   let alphabet = outputAlphabetASCII;
 
@@ -167,7 +200,12 @@ inputLinkElement.addEventListener("input", updateOutput);
 
   if (payload && payload.trim()) {
     try {
-      const target = decompress(payload, alphabet);
+      // Classic payloads redirect immediately; neural ones need the
+      // model, so wait for its download to settle first
+      if (payloadSchemeVersion(payload, alphabet) >= 1) {
+        await modelReady;
+      }
+      const target = decompressHybrid(payload, alphabet, model);
       window.location.href = target;
       return;
     } catch (e) {

@@ -1,10 +1,22 @@
 #!/usr/bin/env node
-import { compress, decompress } from "./compress.js";
+import { readFile } from "node:fs/promises";
+import { compressHybrid, decompressHybrid } from "./hybrid.js";
+import { URLModel } from "./neural.js";
 import {
   outputAlphabetASCII,
   outputAlphabetQR,
   outputAlphabetEmoji
 } from "./alphabets.js";
+
+// Load the neural model shipped alongside the CLI; fall back to
+// classic-only compression if it's unavailable
+let model = null;
+try {
+  const buffer = await readFile(new URL("./model/url-model.bin", import.meta.url));
+  model = new URLModel(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+} catch (e) {
+  console.error("Warning: neural model unavailable, using classic compression only.");
+}
 
 // The domain used to build and recognize short links; set HAMR_DOMAIN
 // to use a self-hosted deployment (defaults to the original site)
@@ -35,8 +47,8 @@ if (payload) {
   const isQRCode = payload[0] === "/";
   payload = payload.slice(1);
   const useEmoji = Array.from(payload).some(c => !outputAlphabetASCII.includes(c));
-  if (isQRCode) console.log(decompress(payload, outputAlphabetQR));
-  else console.log(decompress(payload, useEmoji ? outputAlphabetEmoji : outputAlphabetASCII));
+  if (isQRCode) console.log(decompressHybrid(payload, outputAlphabetQR, model));
+  else console.log(decompressHybrid(payload, useEmoji ? outputAlphabetEmoji : outputAlphabetASCII, model));
   process.exit(0);
 }
 
@@ -50,7 +62,7 @@ else if (alphabetName !== "ascii") {
 }
 
 if (alphabetName === "qr") {
-  console.log(`HTTP://${domain.toUpperCase()}/` + compress(input, alphabet));
+  console.log(`HTTP://${domain.toUpperCase()}/` + compressHybrid(input, alphabet, model));
 } else {
-  console.log(`https://${domain}#` + compress(input, alphabet));
+  console.log(`https://${domain}#` + compressHybrid(input, alphabet, model));
 }

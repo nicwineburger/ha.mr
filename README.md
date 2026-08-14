@@ -2,11 +2,19 @@
 Compresses links and optimizes QR codes entirely in the browser, without a back-end database.
 
 ## How
+Every link is compressed with two schemes, and the smaller payload wins (a version marker in the payload records which one was used):
+
+### Classic scheme
 1. Common parts of the link (e.g. protocol, `www.` prefix, `index.html`) are manually detected and reduced to individual bits. If present, the port is encoded as a raw numeric value.
 2. Second-level and top-level domains are matched against a Huffman-coded dictionary of the most common websites and TLDs.
 3. The rest of the link is split into parts, and each segment is either fitted to a predefined character set, or Huffman coded.
-4. For links, the output is encoded in the full character set of a URL. (I've been informed that square brackets `[]` are not supposed to be a part of this set, but it's too late to change that now.)
-5. For QR codes, the output uses the alphanumeric character set to remove overhead compared to other QR code generators.
+
+### Neural scheme
+A ~1.4MB character-level transformer (see [`model/README.md`](model/README.md)) predicts each character of the link, and an arithmetic coder turns those predictions into near-optimal bits. Inference runs in ~200 lines of dependency-free JavaScript restricted to IEEE correctly-rounded operations, so encoding and decoding are bit-identical on every browser and platform. The model ships with the site as a static file — any fork hosts it automatically. If it fails to load, everything falls back to the classic scheme.
+
+### Output
+- For links, the output is encoded in the full character set of a URL. (I've been informed that square brackets `[]` are not supposed to be a part of this set, but it's too late to change that now.)
+- For QR codes, the output uses the alphanumeric character set to remove overhead compared to other QR code generators.
 
 ## Usage
 
@@ -42,7 +50,7 @@ To run your own instance:
 2. Replace the contents of `CNAME` with your own domain, or delete the file if you're not using a custom domain.
 3. Serve the site from the **root** of the domain. Text links (`https://your.domain#...`) work from any path, but QR-code links carry their payload in the URL path and rely on the `404.html` fallback at the domain root to decode them.
 
-Links are only decodable by a deployment of this codebase, but they are not tied to the domain that created them: the payload format is identical everywhere, so a link's path/fragment can be decoded by any instance (or by the CLI).
+Links are only decodable by a deployment of this codebase, but they are not tied to the domain that created them: the payload format is identical everywhere, so a link's path/fragment can be decoded by any instance (or by the CLI). The one caveat is the neural model: version 1 payloads can only be decoded with the exact `model/url-model.bin` that encoded them, so don't swap that file for a retrained one unless you're prepared to break your own previously issued links (see [`model/README.md`](model/README.md)).
 
 For the command line tool, set the `HAMR_DOMAIN` environment variable to build and recognize short links on your domain:
 
@@ -64,4 +72,6 @@ QR-code links whose payload happens to contain a `/../` or `/./` sequence may be
 - https://www.npmjs.com/package/qrcode (vendored as `qrcode.js`)
 - https://github.com/smythp/reddit_links_dataset
 - https://github.com/ada-url/url-dataset
+- https://commoncrawl.org/ (URL index used as model training data)
+- https://github.com/ansisg/hamr — the fork whose transformer + arithmetic-coding experiment inspired the neural scheme (reimplemented here with a ~200x smaller model and deterministic in-browser inference)
 - [Hammersmith One](https://fonts.google.com/specimen/Hammersmith+One) by Sorkin Type Co, self-hosted under the [SIL Open Font License](fonts/OFL.txt)
