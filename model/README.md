@@ -1,53 +1,61 @@
 # Neural URL model
 
-`url-model.bin` is the character-level transformer used for neural link
-compression (see `neural.js` in the repository root). It predicts each
-character of a URL; an arithmetic coder converts those predictions into
-near-optimal bits.
+`url-model.bin` is the tokenized character transformer used for neural
+link compression (see `neural.js` in the repository root). It predicts
+each token of a URL; an arithmetic coder converts those predictions
+into near-optimal bits.
 
-## Format
+## Format (hamr-url-model-v2)
 
 Little-endian binary: a `uint32` header length, a JSON header (model
-dimensions and tensor manifest), then float16 tensor data in manifest
-order. Loaded and evaluated by `neural.js` in plain JavaScript — no
-runtime dependencies, no WebGPU/WASM, and only IEEE correctly-rounded
-operations so that encoding and decoding are bit-identical on every
-browser and platform.
+dimensions, token manifest, tensor manifest), then float16 tensor data
+in manifest order. Loaded and evaluated by `neural.js` in plain
+JavaScript — no runtime dependencies, no WebGPU/WASM, and only IEEE
+correctly-rounded operations so that encoding and decoding are
+bit-identical on every browser and platform.
+
+Tokenization is greedy longest-match over the header's `tokens` list
+(EOS = 0, ids follow list order from 1). The vocabulary was learned by
+BPE over separator-delimited URL chunks, then applied greedily — an
+exact string operation, identical in the Python trainer and the JS
+engine. v1-format files (no `tokens`; character-level) still load.
 
 ## Architecture
 
-- Character vocabulary: EOS + printable ASCII `0x21..0x7E` (95 symbols)
-- 4 transformer layers, 128 hidden dim, 4 heads, 384 MLP dim
-- Learned absolute position embeddings, 128-token context
+- 1024-token vocabulary (~2.1 characters/token on URLs)
+- 5 transformer layers, 192 hidden dim, 6 heads, 576 MLP dim
+- Learned absolute position embeddings, 96-token context (~200 chars)
 - RMSNorm, ReLU MLP, output head tied to the embedding table
-- ~685K parameters ≈ 1.4MB as float16
+- ~2.06M parameters ≈ 4.1MB as float16
 
-The architecture is deliberately restricted to operations that are
-deterministic in JavaScript (`+ - * / sqrt`): no GELU/SiLU (needs
-`exp`/`tanh`), no rotary embeddings (needs `sin`/`cos`). Softmax is
-computed with a deterministic `exp` built from basic operations.
+The architecture is restricted to operations that are deterministic in
+JavaScript (`+ - * / sqrt`): no GELU/SiLU (needs `exp`/`tanh`), no
+rotary embeddings (needs `sin`/`cos`). Softmax uses a deterministic
+`exp` built from basic operations.
+
+This configuration won a controlled screening campaign over
+tokenizers, vocab sizes, and model scales — see
+[`harness/README.md`](harness/README.md) for the methodology and full
+results table.
 
 ## Training data
 
-- ~340K URLs sampled from the [Common Crawl](https://commoncrawl.org/)
-  URL index (crawl `CC-MAIN-2025-26`), spread uniformly across the
-  domain space via `cluster.idx` block sampling, capped at 30 URLs per
-  host
-- ~100K popular-site URLs from
-  [ada-url/url-dataset](https://github.com/ada-url/url-dataset),
-  upweighted 3x (popular links are what people actually shorten)
-
-URLs are scheme-stripped (the scheme is a separate payload bit) and
-packed into 128-character windows aligned to URL starts, separated by
-EOS. 2000 URLs are held out before training for validation and
-benchmarking.
+~1.68M URLs (102M characters): a uniform sample across the
+[Common Crawl](https://commoncrawl.org/) `CC-MAIN-2025-26` URL index
+(via `cluster.idx` block sampling, capped at 30 URLs per host,
+153K distinct hosts) plus
+[ada-url/url-dataset](https://github.com/ada-url/url-dataset)
+popular-site URLs upweighted 3x. Train/val/holdout membership is
+hashed from the URL string, so splits are stable and leak-free across
+corpus rebuilds.
 
 ## Reproducing
 
 ```sh
-./fetch-data.sh          # downloads + curates the corpus (~250MB)
+cd harness
+./fetch-data.sh          # corpus + vocab + baselines (~500MB download)
 pip install torch numpy  # CPU build is fine
-python3 train.py         # ~30 min on 4 CPU cores; writes url-model.bin
+python3 train-final.py   # ~80 min on 4 CPU cores; writes ../url-model.bin
 ```
 
 Training is seeded but not guaranteed bit-reproducible across

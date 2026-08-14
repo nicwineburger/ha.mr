@@ -1,13 +1,17 @@
 #!/bin/bash
-# Builds the URL training corpus for train.py into model/data/.
+# Builds the URL corpus for the experiment harness into data/.
 #
 # Sources:
-# - Common Crawl URL index (https://commoncrawl.org/): ~600 index
-#   blocks sampled uniformly across the SURT-sorted domain space, via
-#   the cluster.idx block map, so the corpus covers many hosts instead
-#   of one alphabetical neighborhood
+# - Common Crawl URL index (https://commoncrawl.org/): index blocks
+#   sampled uniformly across the SURT-sorted domain space via the
+#   cluster.idx block map, so the corpus covers many hosts instead of
+#   one alphabetical neighborhood
 # - https://github.com/ada-url/url-dataset: ~100K URLs from popular
 #   sites (upweighted during training - they're what people shorten)
+#
+# Sampling every 400th block yields a ~1.7M-URL corpus (~100M chars,
+# ~500MB of downloads). Adjust the modulus to scale up or down; splits
+# stay stable because membership is hashed from the URL string.
 set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p data/ccblocks
@@ -21,8 +25,7 @@ if [ ! -s cluster.idx ]; then
   curl -s -o cluster.idx "$BASE/cluster.idx"
 fi
 
-# Sample every 1600th block pointer: shard file, byte offset, length
-awk 'NR % 1600 == 7 { split($0, a, "\t"); print a[2], a[3], a[4] }' cluster.idx > blocks.txt
+awk 'NR % 400 == 3 { split($0, a, "\t"); print a[2], a[3], a[4] }' cluster.idx > blocks.txt
 echo "Fetching $(wc -l < blocks.txt) index blocks..."
 
 fetch_block() {
@@ -39,5 +42,8 @@ if [ ! -d url-dataset ]; then
   git clone --depth 1 https://github.com/ada-url/url-dataset
 fi
 
-python3 ../extract-urls.py
-echo "Done. Corpus in data/cc-urls.txt + data/url-dataset/out.txt"
+cd ..
+python3 build-corpus.py
+python3 vocab.py data/corpus-train.txt data/vocab-1024.txt 1024
+node classic-sizes.mjs data/corpus-holdout.txt data/classic.json
+echo "Done: data/corpus-{train,val,holdout}.txt, data/vocab-1024.txt, data/classic.json"
