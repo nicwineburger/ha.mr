@@ -61,10 +61,27 @@ const model = new URLModel(
   (await readFile(new URL("../model/url-model.bin", import.meta.url))).buffer);
 
 test("model file parses with expected dimensions", () => {
-  assert.equal(model.vocab, 95);
+  // The shipped v2 model: 1024-token vocabulary, 96-token context
+  assert.equal(model.vocab, 1024);
+  assert.equal(model.maxLen, 96);
+  assert.ok(model.tokens.length === 1023);
   assert.ok(model.dim >= 32);
   assert.ok(model.layers >= 1);
-  assert.equal(model.maxLen, 128);
+});
+
+test("tokenizer round-trips URL text", () => {
+  const texts = [
+    "www.example.com/some/path?a=1&b=2",
+    "en.wikipedia.org/wiki/Hammer_(tool)",
+    "a-b.xyz:8080/x_y/z.html#frag%20ment"
+  ];
+  for (const text of texts) {
+    const ids = model.tokenize(text);
+    assert.notEqual(ids, null);
+    assert.equal(model.detokenize(ids), text);
+  }
+  // Out-of-vocabulary characters are rejected, not mangled
+  assert.equal(model.tokenize("café.example/x"), null);
 });
 
 test("model inference is self-consistent across sessions", () => {
@@ -102,11 +119,24 @@ test("neural coder round-trips URLs", () => {
 });
 
 test("neural coder refuses what it can't represent", () => {
-  // Too long for the model's context window
-  const long = "https://example.com/" + "a".repeat(150);
+  // Too long for the model's ~200-char effective context window
+  const long = "https://example.com/" +
+    Array.from({ length: 120 }, (_, i) => `x${i % 10}z`).join("/");
   assert.equal(neuralCompressToNumber(model, long), null);
   // Non-http(s) schemes aren't representable in the payload format
   assert.equal(neuralCompressToNumber(model, "ftp://example.com/x"), null);
+});
+
+test("hybrid survives classic-scheme encode failures", () => {
+  // Underscores are invalid DNS but occur in real hostnames; the
+  // classic domain dictionary can't encode them and throws. The
+  // hybrid should fall through to the neural coder.
+  const link = "http://www_test.example.com/a";
+  assert.throws(() => compress(link, outputAlphabetASCII));
+  const payload = compressHybrid(link, outputAlphabetASCII, model);
+  assert.equal(decompressHybrid(payload, outputAlphabetASCII, model), link);
+  // Without a model, the classic error propagates
+  assert.throws(() => compressHybrid(link, outputAlphabetASCII, null));
 });
 
 test("hybrid picks a scheme and round-trips either way", () => {
@@ -149,10 +179,10 @@ test("pinned payloads stay stable", () => {
    * all have to stay bit-compatible. See model/README.md.
    */
   const vectors = [
-    ["https://www.example.com/some/path?a=1&b=2", "!/Z+$L6r5_zF9d(e-X!", "R$O0TCZ9Z2C$UR60D5BFE+"],
-    ["https://en.wikipedia.org/wiki/Hammer", "@vbdmvo_W!", "GPU-YOKK0L7"],
-    ["https://github.com/user/repo/blob/main/README.md", "Ph&Ttw?$#v9i!A0si/RFHg", "NCTK5P2ASD3+L5K$+/:L0YK:DG"],
-    ["https://blog.example-widgets.net/2024/06/announcing-the-new-widget-configurator", "+T@k9Jt[E?+U-eo9QKbu5hTh.k$", "*PB76DOVDO1T07G+PCMSBRUF:MY-4MW"]
+    ["https://www.example.com/some/path?a=1&b=2", "XnE2w.Z((Ar+H4UO]:$", "6EI81FE:WFI/8IPJ3Q:O-:"],
+    ["https://en.wikipedia.org/wiki/Hammer", "XY)ICJh#", "CO0XB:$*:"],
+    ["https://github.com/user/repo/blob/main/README.md", "/dq~n$0R-]VJ.pX*dDKtK2", "WVEOBO0P/FC-BC+-8593UUQ5:/"],
+    ["https://blog.example-widgets.net/2024/06/announcing-the-new-widget-configurator", "kd#IyiYiGz#-@Qe1WP71qSYF5!", "O$3852YF/AF24MOFRLW.W82MH35FM/"]
   ];
   for (const [link, ascii, qr] of vectors) {
     assert.equal(compressHybrid(link, outputAlphabetASCII, model), ascii);

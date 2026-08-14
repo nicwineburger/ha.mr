@@ -43,8 +43,13 @@ for (const raw of urls) {
     const back = decompressHybrid(hybrid, outputAlphabetASCII, model);
     if (new URL(back).href !== new URL(link).href) {
       // Classic-scheme payloads normalize escapes of unreserved
-      // characters (documented behavior, pinned in the test suite)
-      const decode = (u) => { try { return decodeURIComponent(u); } catch { return u; } };
+      // characters and query "+" -> "%20" (form-encoding equivalence);
+      // both are documented behavior, pinned in the test suite
+      const decode = (u) => {
+        const q = u.indexOf("?");
+        if (q !== -1) u = u.slice(0, q) + u.slice(q).replace(/\+/g, "%20");
+        try { return decodeURIComponent(u); } catch { return u; }
+      };
       if (decode(new URL(back).href) !== decode(new URL(link).href)) {
         throw `round-trip mismatch: ${back}`;
       }

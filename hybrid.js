@@ -27,17 +27,26 @@ import {
  * @returns {string} Output payload (not a full link!)
  */
 export function compressHybrid (input, alphabet, model) {
-  let best = compressToNumber(input);
+  // Either scheme may fail where the other succeeds (e.g. the classic
+  // domain dictionary can't encode hostnames containing "_", which
+  // are invalid DNS but do occur in the wild) - only fail if both do.
+  let best = null;
+  let classicError = null;
+  try {
+    best = compressToNumber(input);
+  } catch (e) {
+    classicError = e;
+  }
   if (model) {
     try {
       const neural = neuralCompressToNumber(model, input);
       // Smaller payload number = same or fewer output symbols
-      if (neural !== null && neural < best) best = neural;
+      if (neural !== null && (best === null || neural < best)) best = neural;
     } catch (e) {
-      // The classic result is always available as a fallback
       console.warn("Neural compression failed, using classic:", e);
     }
   }
+  if (best === null) throw classicError;
   return numberToString(best, alphabet);
 }
 

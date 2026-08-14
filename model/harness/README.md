@@ -62,6 +62,11 @@ is model cross-entropy + 6 bits of format overhead, base-85-ized); final
 numbers in the PR/README come from the real coder via
 `../benchmark.mjs`, which also verifies round-trips.
 
+**Shipped model** (`train-final.py`, the bpe1k-big config at a 75M-token
+budget, 79 min on 4 CPU cores): 2.336 bits/char on the holdout; with the
+real coder, hybrid payloads average 20.1 symbols vs 39.3 classic
+(**-48.8%**) over 1,000 holdout URLs, neural chosen 98.9% of the time.
+
 Not pursued, and why:
 - **Domain-conditioned splitting** (classic domain + neural path):
   the hybrid already picks the better whole-URL scheme per link, and

@@ -80,7 +80,10 @@ const normalizedCases = [
   // Hostname is lowercased
   ["https://EXAMPLE.COM/Path", "https://example.com/Path"],
   // Square brackets are percent-encoded (they're reserved for IPv6 hosts)
-  ["https://example.com/a[b]c", "https://example.com/a%5Bb%5Dc"]
+  ["https://example.com/a[b]c", "https://example.com/a%5Bb%5Dc"],
+  // Query "+" becomes "%20" (form-encoding equivalence); path "+" is
+  // a literal plus and is preserved
+  ["https://example.com/a+b?q=c+d", "https://example.com/a+b?q=c%20d"]
 ];
 
 test("intentional normalizations (ascii)", () => {

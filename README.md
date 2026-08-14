@@ -10,7 +10,7 @@ Every link is compressed with two schemes, and the smaller payload wins (a versi
 3. The rest of the link is split into parts, and each segment is either fitted to a predefined character set, or Huffman coded.
 
 ### Neural scheme
-A ~1.4MB character-level transformer (see [`model/README.md`](model/README.md)) predicts each character of the link, and an arithmetic coder turns those predictions into near-optimal bits. Inference runs in ~200 lines of dependency-free JavaScript restricted to IEEE correctly-rounded operations, so encoding and decoding are bit-identical on every browser and platform. The model ships with the site as a static file — any fork hosts it automatically. If it fails to load, everything falls back to the classic scheme.
+A ~4MB tokenized transformer (see [`model/README.md`](model/README.md)) predicts each token of the link, and an arithmetic coder turns those predictions into near-optimal bits. On held-out URLs this cuts payloads roughly in half compared to the classic scheme alone; the winning model configuration was chosen by a controlled experiment campaign ([`model/harness/README.md`](model/harness/README.md)). Inference runs in ~200 lines of dependency-free JavaScript restricted to IEEE correctly-rounded operations, so encoding and decoding are bit-identical on every browser and platform. The model ships with the site as a static file — any fork hosts it automatically. If it fails to load, everything falls back to the classic scheme.
 
 ### Output
 - For links, the output is encoded in the full character set of a URL. (I've been informed that square brackets `[]` are not supposed to be a part of this set, but it's too late to change that now.)
@@ -73,5 +73,5 @@ QR-code links whose payload happens to contain a `/../` or `/./` sequence may be
 - https://github.com/smythp/reddit_links_dataset
 - https://github.com/ada-url/url-dataset
 - https://commoncrawl.org/ (URL index used as model training data)
-- https://github.com/ansisg/hamr — the fork whose transformer + arithmetic-coding experiment inspired the neural scheme (reimplemented here with a ~200x smaller model and deterministic in-browser inference)
+- https://github.com/ansisg/hamr — the fork whose transformer + arithmetic-coding experiment inspired the neural scheme (reimplemented here with a ~65x smaller model and deterministic in-browser inference)
 - [Hammersmith One](https://fonts.google.com/specimen/Hammersmith+One) by Sorkin Type Co, self-hosted under the [SIL Open Font License](fonts/OFL.txt)
