@@ -208,9 +208,18 @@ def evaluate_and_record(model, tok, cfg, n_params, train_time, curve, device):
     return result
 
 
-@app.function(image=image, volumes={VOL: vol}, gpu="A10G", timeout=8 * 3600,
-              cpu=8, memory=32768)
-def train_gpu(cfg: dict):
+def _run_training(cfg):
+    """The shared training loop. Extras over the base recipe, all
+    opt-in via cfg and recorded with the result row:
+      amp: bfloat16 autocast (teacher only; students train fp32/TF32
+           because they must match the shipped recipe)
+      ckpt_every: save a resumable checkpoint (model+opt+step+curve)
+           to the volume every N steps, and resume from it on restart
+           - lets big runs survive preemption (Modal retries)
+      distill_from: teacher config dict; adds KL(student, teacher
+           logits) to the loss (see cfg kd_alpha / kd_temp)
+    """
+    import contextlib
     import math
     import time
 
@@ -223,6 +232,9 @@ def train_gpu(cfg: dict):
     device = "cuda"
     seed = cfg.get("seed", 1234)
     torch.manual_seed(seed)
+    amp = cfg.get("amp", False)
+    autocast = (lambda: torch.autocast("cuda", dtype=torch.bfloat16)) if amp \
+        else contextlib.nullcontext
 
     tok = make_tokenizer(cfg["tokenizer"])
     vsize = cfg["tokenizer"].split("-")[1].split(".")[0]
@@ -232,6 +244,17 @@ def train_gpu(cfg: dict):
     val = np.load(os.path.join(VOL, f"packed-val-{vsize}.npy"))[:4096]
     val = torch.from_numpy(val.astype(np.int16)).to(device)
 
+    teacher = None
+    if cfg.get("distill_from"):
+        tcfg = cfg["distill_from"]
+        teacher = build_model(tcfg, tok.size).to(device)
+        ck = torch.load(os.path.join(VOL, f"ckpt-live-{tcfg['name']}.pt"),
+                        map_location=device)
+        teacher.load_state_dict(ck["model"])
+        teacher.eval()
+        teacher.requires_grad_(False)
+        print(f"teacher {tcfg['name']} loaded (step {ck['step']})", flush=True)
+
     model = build_model(cfg, tok.size).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     ctx, batch = cfg["ctx"], cfg.get("batch", 512)
@@ -240,13 +263,26 @@ def train_gpu(cfg: dict):
     opt = torch.optim.AdamW(model.parameters(), lr=lr_max, weight_decay=0.01)
     warmup = min(500, total_steps // 20)
     val_every = cfg.get("val_every", 1000)
+    ckpt_every = cfg.get("ckpt_every", 0)
+    kd_alpha = cfg.get("kd_alpha", 0.5)
+    kd_temp = cfg.get("kd_temp", 1.0)
+    live_ckpt = os.path.join(VOL, f"ckpt-live-{cfg['name']}.pt")
+
+    start_step, curve, elapsed = 0, [], 0.0
+    if ckpt_every and os.path.exists(live_ckpt):
+        ck = torch.load(live_ckpt, map_location=device)
+        model.load_state_dict(ck["model"])
+        opt.load_state_dict(ck["opt"])
+        start_step, curve, elapsed = ck["step"], ck["curve"], ck["elapsed"]
+        print(f"resumed from step {start_step}", flush=True)
+
     print(f"[{cfg['name']}] vocab={tok.size} params={n_params/1e3:.0f}K "
           f"windows={len(data)} steps={total_steps} batch={batch}", flush=True)
 
     def val_loss():
         model.eval()
         tot, cnt = 0.0, 0
-        with torch.no_grad():
+        with torch.no_grad(), autocast():
             for i in range(0, len(val), 1024):
                 b = val[i:i + 1024].long()
                 x, y = b[:, :-1], b[:, 1:]
@@ -256,37 +292,77 @@ def train_gpu(cfg: dict):
         model.train()
         return tot / cnt
 
-    curve = []
+    def save_live(step):
+        tmp = live_ckpt + ".tmp"
+        torch.save({"step": step,
+                    "model": {k: v.cpu() for k, v in model.state_dict().items()},
+                    "opt": opt.state_dict(),
+                    "curve": curve,
+                    "elapsed": elapsed + time.time() - t0}, tmp)
+        os.replace(tmp, live_ckpt)
+        vol.commit()
+
     t0 = time.time()
     steps_per_epoch = len(data) // batch
-    perm = None
-    for step in range(total_steps):
+    perm, perm_epoch = None, -1
+    for step in range(start_step, total_steps):
         lr = lr_max * (step + 1) / warmup if step < warmup else \
             lr_max * 0.1 + 0.45 * lr_max * (1 + math.cos(
                 math.pi * (step - warmup) / max(1, total_steps - warmup)))
         for g in opt.param_groups: g["lr"] = lr
         epoch, pos = divmod(step, steps_per_epoch)
-        if pos == 0:
+        if epoch != perm_epoch:
             perm = torch.from_numpy(
                 np.random.RandomState(seed + 1 + epoch)
                 .permutation(len(data))).to(device)
+            perm_epoch = epoch
         idx = perm[pos * batch:(pos + 1) * batch]
         b = data[idx].long()
         x, y = b[:, :-1], b[:, 1:]
-        loss = F.cross_entropy(model(x).reshape(-1, tok.size), y.reshape(-1))
+        with autocast():
+            logits = model(x)
+            loss = F.cross_entropy(logits.reshape(-1, tok.size), y.reshape(-1))
+            if teacher is not None:
+                with torch.no_grad(), \
+                        torch.autocast("cuda", dtype=torch.bfloat16):
+                    tlogits = teacher(x).float()
+                kl = F.kl_div(
+                    F.log_softmax(logits / kd_temp, dim=-1),
+                    F.log_softmax(tlogits / kd_temp, dim=-1),
+                    log_target=True, reduction="batchmean") \
+                    * (kd_temp ** 2) / logits.shape[1]
+                loss = (1 - kd_alpha) * loss + kd_alpha * kl
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
         if (step + 1) % val_every == 0 or step + 1 == total_steps:
             vl = val_loss()
-            el = time.time() - t0
+            el = elapsed + time.time() - t0
             curve.append([step + 1, round(vl, 5)])
             print(f"  step {step+1}/{total_steps} train {loss.item():.4f} "
-                  f"val {vl:.4f} ({(step+1)*batch*ctx/el/1e3:.0f}K tok/s)",
+                  f"val {vl:.4f} ({(step+1-start_step)*batch*ctx/(time.time()-t0)/1e3:.0f}K tok/s)",
                   flush=True)
+        if ckpt_every and ((step + 1) % ckpt_every == 0
+                           or step + 1 == total_steps):
+            save_live(step + 1)
     return evaluate_and_record(model, tok, cfg, n_params,
-                               time.time() - t0, curve, device)
+                               elapsed + time.time() - t0, curve, device)
+
+
+@app.function(image=image, volumes={VOL: vol}, gpu="A10G", timeout=8 * 3600,
+              cpu=8, memory=32768)
+def train_gpu(cfg: dict):
+    return _run_training(cfg)
+
+
+@app.function(image=image, volumes={VOL: vol}, gpu="A100-40GB",
+              timeout=12 * 3600, cpu=8, memory=32768,
+              retries=modal.Retries(max_retries=3, initial_delay=10.0))
+def train_big(cfg: dict):
+    """Teacher-scale and distillation runs: A100, bf16 autocast,
+    resumable checkpoints (pass amp/ckpt_every in cfg)."""
+    return _run_training(cfg)
 
 
 @app.function(image=image, volumes={VOL: vol}, gpu="A10G", timeout=1800,
@@ -397,6 +473,9 @@ def main(action: str = "train", config: str = ""):
     if action == "train":
         cfg = json.loads(config)
         train_gpu.remote(cfg)
+    elif action == "train-big":
+        # teacher-scale or distillation run on A100 (amp, ckpt/resume)
+        train_big.remote(json.loads(config))
     elif action == "train-many":
         for r in train_gpu.map(json.loads(config)):
             print("done:", r["name"], r["bits_per_char"])
