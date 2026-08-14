@@ -1,1 +1,4 @@
 node_modules/
+model/harness/data/
+model/harness/results.jsonl
+model/harness/ckpt-*.pt

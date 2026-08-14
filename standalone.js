@@ -1,10 +1,25 @@
 #!/usr/bin/env node
-import { compress, decompress } from "./compress.js";
+import { readFile } from "node:fs/promises";
+import { compressHybrid, decompressHybrid, payloadSchemeVersion } from "./hybrid.js";
+import { URLModel } from "./neural.js";
 import {
   outputAlphabetASCII,
   outputAlphabetQR,
   outputAlphabetEmoji
 } from "./alphabets.js";
+
+// Load the neural model shipped alongside the CLI; fall back to
+// classic-only compression if it's unavailable
+async function loadModel (file) {
+  const buffer = await readFile(new URL(file, import.meta.url));
+  return new URLModel(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+}
+let model = null;
+try {
+  model = await loadModel("./model/url-model.bin");
+} catch (e) {
+  console.error("Warning: neural model unavailable, using classic compression only.");
+}
 
 // The domain used to build and recognize short links; set HAMR_DOMAIN
 // to use a self-hosted deployment (defaults to the original site)
@@ -35,8 +50,20 @@ if (payload) {
   const isQRCode = payload[0] === "/";
   payload = payload.slice(1);
   const useEmoji = Array.from(payload).some(c => !outputAlphabetASCII.includes(c));
-  if (isQRCode) console.log(decompress(payload, outputAlphabetQR));
-  else console.log(decompress(payload, useEmoji ? outputAlphabetEmoji : outputAlphabetASCII));
+  const alpha = isQRCode ? outputAlphabetQR
+    : useEmoji ? outputAlphabetEmoji : outputAlphabetASCII;
+  // Links made by older models decode with their archived model file
+  let decodeModel = model;
+  const version = payloadSchemeVersion(payload, alpha);
+  if (version >= 1 && (!decodeModel || decodeModel.linkVersion !== version)) {
+    try {
+      decodeModel = await loadModel(`./model/url-model-v${version}.bin`);
+    } catch (e) {
+      console.error(`This link requires model version ${version} (model/url-model-v${version}.bin).`);
+      process.exit(3);
+    }
+  }
+  console.log(decompressHybrid(payload, alpha, decodeModel));
   process.exit(0);
 }
 
@@ -50,7 +77,7 @@ else if (alphabetName !== "ascii") {
 }
 
 if (alphabetName === "qr") {
-  console.log(`HTTP://${domain.toUpperCase()}/` + compress(input, alphabet));
+  console.log(`HTTP://${domain.toUpperCase()}/` + compressHybrid(input, alphabet, model));
 } else {
-  console.log(`https://${domain}#` + compress(input, alphabet));
+  console.log(`https://${domain}#` + compressHybrid(input, alphabet, model));
 }

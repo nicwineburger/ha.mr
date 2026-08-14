@@ -77,7 +77,7 @@ for (const key in pathEncode) {
  * @param {string[]} alphabet Ordered list of possible character sequences in output
  * @returns {string} String representing the input number
  */
-function numberToString (number, alphabet) {
+export function numberToString (number, alphabet) {
   const alphabetSize = BigInt(alphabet.length);
   let string = "";
 
@@ -96,7 +96,7 @@ function numberToString (number, alphabet) {
  * @param {string[]} alphabet Ordered list of possible character sequences in `string`
  * @returns {BigInt} Decoded number
  */
-function stringToNumber (string, alphabet) {
+export function stringToNumber (string, alphabet) {
   const alphabetSize = BigInt(alphabet.length);
   let number = 0n;
 
@@ -158,6 +158,15 @@ function huffmanDecode (number, lookup) {
  * @returns {string} Output payload (not a full link!)
  */
 export function compress (input, alphabet) {
+  return numberToString(compressToNumber(input), alphabet);
+}
+
+/**
+ * Compresses the input link into a raw payload number.
+ * @param {string} input Link to compress
+ * @returns {BigInt} Payload as a number, before alphabet encoding
+ */
+export function compressToNumber (input) {
   let number = 1n;
 
   // Validate URL, add protocol if needed
@@ -392,7 +401,7 @@ export function compress (input, alphabet) {
   }
   number <<= 1n;
 
-  return numberToString(number, alphabet);
+  return number;
 }
 
 /**
@@ -403,8 +412,15 @@ export function compress (input, alphabet) {
  * @returns {string} Full link containing payload contents.
  */
 export function decompress (input, alphabet) {
-  let number = stringToNumber(input, alphabet);
+  return decompressNumber(stringToNumber(input, alphabet));
+}
 
+/**
+ * Decompresses a raw payload number into a full link.
+ * @param {BigInt} number Payload number (version bits included)
+ * @returns {string} Full link containing payload contents.
+ */
+export function decompressNumber (number) {
   // Version number - currently unused
   let version = 0;
   while (number & 1n) {
