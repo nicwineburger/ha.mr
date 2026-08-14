@@ -1,0 +1,17 @@
+{
+  "name": "hamr",
+  "version": "1.0.0",
+  "description": "Compresses links and optimizes QR codes entirely in the browser, without a back-end database.",
+  "type": "module",
+  "bin": {
+    "hamr": "./standalone.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nicwineburger/ha.mr.git"
+  },
+  "license": "MIT"
+}
