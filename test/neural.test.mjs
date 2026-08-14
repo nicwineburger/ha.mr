@@ -140,6 +140,30 @@ test("classic payloads decode through the hybrid path", () => {
   }
 });
 
+test("pinned payloads stay stable", () => {
+  /*
+   * Payloads generated with the shipped model. If this test fails,
+   * encoding behavior changed - which BREAKS EVERY ISSUED NEURAL LINK.
+   * That must never happen by accident: the model file, the arithmetic
+   * coder, and the inference math (including its deterministic exp)
+   * all have to stay bit-compatible. See model/README.md.
+   */
+  const vectors = [
+    ["https://www.example.com/some/path?a=1&b=2", "!/Z+$L6r5_zF9d(e-X!", "R$O0TCZ9Z2C$UR60D5BFE+"],
+    ["https://en.wikipedia.org/wiki/Hammer", "@vbdmvo_W!", "GPU-YOKK0L7"],
+    ["https://github.com/user/repo/blob/main/README.md", "Ph&Ttw?$#v9i!A0si/RFHg", "NCTK5P2ASD3+L5K$+/:L0YK:DG"],
+    ["https://blog.example-widgets.net/2024/06/announcing-the-new-widget-configurator", "+T@k9Jt[E?+U-eo9QKbu5hTh.k$", "*PB76DOVDO1T07G+PCMSBRUF:MY-4MW"]
+  ];
+  for (const [link, ascii, qr] of vectors) {
+    assert.equal(compressHybrid(link, outputAlphabetASCII, model), ascii);
+    assert.equal(compressHybrid(link, outputAlphabetQR, model), qr);
+    assert.equal(new URL(decompressHybrid(ascii, outputAlphabetASCII, model)).href,
+      new URL(link).href);
+    assert.equal(new URL(decompressHybrid(qr, outputAlphabetQR, model)).href,
+      new URL(link).href);
+  }
+});
+
 test("neural payloads require the model to decode", () => {
   const number = neuralCompressToNumber(model, "https://www.example.com/x");
   assert.notEqual(number, null);

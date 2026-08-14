@@ -2,7 +2,7 @@
  * Compression benchmark: classic vs hybrid (classic + neural) payload
  * sizes over a file of URLs, one per line.
  *
- * Usage: node test/benchmark.mjs <urls-file> [limit]
+ * Usage: node model/benchmark.mjs <urls-file> [limit]
  *
  * The URL file should be held-out data the model never saw during
  * training - see model/README.md for how the shipped model's holdout
@@ -17,7 +17,7 @@ import { outputAlphabetASCII } from "../alphabets.js";
 const file = process.argv[2];
 const limit = parseInt(process.argv[3] || "500", 10);
 if (!file) {
-  console.error("Usage: node test/benchmark.mjs <urls-file> [limit]");
+  console.error("Usage: node model/benchmark.mjs <urls-file> [limit]");
   process.exit(1);
 }
 
@@ -42,7 +42,12 @@ for (const raw of urls) {
     hybrid = compressHybrid(link, outputAlphabetASCII, model);
     const back = decompressHybrid(hybrid, outputAlphabetASCII, model);
     if (new URL(back).href !== new URL(link).href) {
-      throw `round-trip mismatch: ${back}`;
+      // Classic-scheme payloads normalize escapes of unreserved
+      // characters (documented behavior, pinned in the test suite)
+      const decode = (u) => { try { return decodeURIComponent(u); } catch { return u; } };
+      if (decode(new URL(back).href) !== decode(new URL(link).href)) {
+        throw `round-trip mismatch: ${back}`;
+      }
     }
   } catch (e) {
     failures ++;
