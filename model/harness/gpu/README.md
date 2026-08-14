@@ -74,9 +74,10 @@ Findings:
 `g-final1024`: the shipped config (dim 192, 5 layers, 6 heads, mlp
 576, ctx 96, vocab 1024) trained for 3B tokens (~6.8 epochs of the
 440M-token pack), `link_version: 2`, exported as
-`../../url-model-next.bin` (hamr-url-model-v2, f16). Final numbers -
-real-coder round-trip benchmark on held-out URLs vs the shipped model
-- are in the results summary on this branch.
+`../../url-model-next.bin` (hamr-url-model-v2, f16). A second
+candidate distilled from a 71.7M-param teacher
+(`../../url-model-next-distilled.bin`) ties it. Final real-coder
+numbers, findings, curves, and cost: [RESULTS.md](RESULTS.md).
 
 Raw result rows (config JSON + metrics + val curves) are in
 `results.jsonl`. Note: rows written by concurrently-finishing Modal
@@ -96,5 +97,5 @@ modal volume get hamr-gpu url-model-next.bin ../../url-model-next.bin
 node benchmark-model.mjs ../../url-model-next.bin data/holdout-eval.txt 1000
 ```
 
-Total campaign cost: see results summary (~$10 of Modal credit:
-corpus build + 5 GPU runs + final).
+Total campaign cost: ~$23 of Modal credit (see RESULTS.md for the
+breakdown).
