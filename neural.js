@@ -124,8 +124,26 @@ export class URLModel {
     const headerLength = view.getUint32(0, true);
     const header = JSON.parse(
       new TextDecoder().decode(new Uint8Array(buffer, 4, headerLength)));
-    if (header.format !== "hamr-url-model-v1") {
+    if (header.format !== "hamr-url-model-v1" &&
+        header.format !== "hamr-url-model-v2") {
       throw `Unknown model format: "${header.format}"`;
+    }
+    /*
+     * Tokenization: v1 models are character-level (EOS = 0, printable
+     * ASCII 0x21..0x7E -> 1..94). v2 models carry a token string list
+     * in the header, applied by greedy longest-match; ids follow list
+     * order starting at 1, EOS stays 0. Both tokenizers are exact
+     * string operations - determinism is unaffected.
+     */
+    if (header.tokens) {
+      this.tokens = header.tokens;
+      this.tokenIds = new Map(header.tokens.map((s, i) => [s, i + 1]));
+      this.maxTokenLength = 1;
+      for (const s of header.tokens) {
+        if (s.length > this.maxTokenLength) this.maxTokenLength = s.length;
+      }
+    } else {
+      this.tokens = null;
     }
     this.vocab = header.vocab;
     this.dim = header.dim;
@@ -145,6 +163,53 @@ export class URLModel {
       this.tensors[name] = data;
       offset += count * 2;
     }
+  }
+
+  /**
+   * Tokenizes text into symbol ids, or null if any part of the text
+   * can't be represented. Character-level for v1 models; greedy
+   * longest-match over the header's token list for v2.
+   * @param {string} text Scheme-less URL text
+   * @returns {number[]?} Symbol ids (without EOS)
+   */
+  tokenize (text) {
+    const symbols = [];
+    if (!this.tokens) {
+      for (const char of text) {
+        const code = char.charCodeAt(0);
+        if (code < 0x21 || code > 0x7e) return null;
+        symbols.push(code - 0x20);
+      }
+      return symbols;
+    }
+    let i = 0;
+    while (i < text.length) {
+      let matched = 0;
+      const limit = Math.min(this.maxTokenLength, text.length - i);
+      for (let length = limit; length > 0; length --) {
+        const id = this.tokenIds.get(text.slice(i, i + length));
+        if (id !== undefined) {
+          symbols.push(id);
+          matched = length;
+          break;
+        }
+      }
+      if (!matched) return null;
+      i += matched;
+    }
+    return symbols;
+  }
+
+  /**
+   * Converts symbol ids back into text.
+   * @param {number[]} symbols Symbol ids (without EOS)
+   * @returns {string} Reconstructed text
+   */
+  detokenize (symbols) {
+    if (!this.tokens) {
+      return symbols.map(s => String.fromCharCode(s + 0x20)).join("");
+    }
+    return symbols.map(s => this.tokens[s - 1]).join("");
   }
 
   /**
@@ -295,12 +360,8 @@ export function neuralCompressToNumber (model, input) {
   const text = url.href.slice(isHTTPS ? 8 : 7);
 
   // Tokenize; bail out on anything the model can't represent
-  const symbols = [];
-  for (const char of text) {
-    const code = char.charCodeAt(0);
-    if (code < 0x21 || code > 0x7e) return null;
-    symbols.push(code - 0x20);
-  }
+  const symbols = model.tokenize(text);
+  if (symbols === null) return null;
   symbols.push(EOS);
   // Sequence overhead: one priming EOS plus the terminating EOS
   if (symbols.length + 1 > model.maxLen) return null;
@@ -338,8 +399,7 @@ export function neuralDecompressNumber (model, number) {
   const symbols = arithmeticDecode(
     bits, modelProbabilities(model), (s) => s === EOS, model.maxLen);
   symbols.pop(); // Drop EOS
-  const text = symbols.map(s => String.fromCharCode(s + 0x20)).join("");
-  return (isHTTPS ? "https://" : "http://") + text;
+  return (isHTTPS ? "https://" : "http://") + model.detokenize(symbols);
 }
 
 /**
