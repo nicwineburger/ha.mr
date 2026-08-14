@@ -5,6 +5,13 @@ link compression (see `neural.js` in the repository root). It predicts
 each token of a URL; an arithmetic coder converts those predictions
 into near-optimal bits.
 
+Current shipped model (payload version 2): trained on GPU for 3B
+tokens over a 19.8M-URL corpus sampled from the Common Crawl index —
+see [`harness/gpu/RESULTS.md`](harness/gpu/RESULTS.md). On 1,000
+held-out URLs, hybrid payloads average **51.8% smaller than the
+classic scheme alone**. `url-model-v1.bin` is the archived first
+model, kept deployed so version-1 links stay decodable.
+
 ## Format (hamr-url-model-v2)
 
 Little-endian binary: a `uint32` header length, a JSON header (model
@@ -40,16 +47,31 @@ results table.
 
 ## Training data
 
-~1.68M URLs (102M characters): a uniform sample across the
+19.8M URLs (1.2B characters): a uniform sample across the
 [Common Crawl](https://commoncrawl.org/) `CC-MAIN-2025-26` URL index
-(via `cluster.idx` block sampling, capped at 30 URLs per host,
-153K distinct hosts) plus
+(every 25th `cluster.idx` block, capped at 30 URLs per host, 1.9M
+distinct hosts) plus
 [ada-url/url-dataset](https://github.com/ada-url/url-dataset)
 popular-site URLs upweighted 3x. Train/val/holdout membership is
 hashed from the URL string, so splits are stable and leak-free across
-corpus rebuilds.
+corpus rebuilds and corpus growth.
+
+Distillation from a 71.7M-parameter teacher was evaluated and tied
+direct training at this model size (the student's capacity is the
+binding constraint) - the shipped model is the directly-trained one.
+Details in [`harness/gpu/RESULTS.md`](harness/gpu/RESULTS.md).
 
 ## Reproducing
+
+GPU path (what produced the shipped model - Modal, ~$25):
+
+```sh
+cd harness/gpu
+modal run modal_corpus.py --stage all
+modal run modal_train.py --action train --config '{...}'  # see gpu/README.md
+```
+
+CPU path (smaller corpus, weaker model, no accounts needed):
 
 ```sh
 cd harness

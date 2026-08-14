@@ -57,16 +57,23 @@ test("arithmetic coder approaches the model's entropy", () => {
   assert.ok(bits.length < 60, `expected < 60 bits, got ${bits.length}`);
 });
 
+// The latest model (encodes payload version 2) and the archived v1
+// model (kept deployed so version-1 links stay decodable)
 const model = new URLModel(
   (await readFile(new URL("../model/url-model.bin", import.meta.url))).buffer);
+const modelV1 = new URLModel(
+  (await readFile(new URL("../model/url-model-v1.bin", import.meta.url))).buffer);
 
-test("model file parses with expected dimensions", () => {
-  // The shipped v2 model: 1024-token vocabulary, 96-token context
-  assert.equal(model.vocab, 1024);
-  assert.equal(model.maxLen, 96);
-  assert.ok(model.tokens.length === 1023);
-  assert.ok(model.dim >= 32);
-  assert.ok(model.layers >= 1);
+test("model files parse with expected dimensions and versions", () => {
+  assert.equal(model.linkVersion, 2);
+  assert.equal(modelV1.linkVersion, 1);
+  for (const m of [model, modelV1]) {
+    assert.equal(m.vocab, 1024);
+    assert.equal(m.maxLen, 96);
+    assert.ok(m.tokens.length === 1023);
+    assert.ok(m.dim >= 32);
+    assert.ok(m.layers >= 1);
+  }
 });
 
 test("tokenizer round-trips URL text", () => {
@@ -112,7 +119,7 @@ test("neural coder round-trips URLs", () => {
   for (const link of neuralCases) {
     const number = neuralCompressToNumber(model, link);
     assert.notEqual(number, null, `expected ${link} to fit the model`);
-    assert.equal(payloadVersion(number), 1);
+    assert.equal(payloadVersion(number), model.linkVersion);
     const back = neuralDecompressNumber(model, number);
     assert.equal(new URL(back).href, new URL(link).href, `round-trip of ${link}`);
   }
@@ -170,28 +177,61 @@ test("classic payloads decode through the hybrid path", () => {
   }
 });
 
-test("pinned payloads stay stable", () => {
-  /*
-   * Payloads generated with the shipped model. If this test fails,
-   * encoding behavior changed - which BREAKS EVERY ISSUED NEURAL LINK.
-   * That must never happen by accident: the model file, the arithmetic
-   * coder, and the inference math (including its deterministic exp)
-   * all have to stay bit-compatible. See model/README.md.
-   */
-  const vectors = [
-    ["https://www.example.com/some/path?a=1&b=2", "XnE2w.Z((Ar+H4UO]:$", "6EI81FE:WFI/8IPJ3Q:O-:"],
-    ["https://en.wikipedia.org/wiki/Hammer", "XY)ICJh#", "CO0XB:$*:"],
-    ["https://github.com/user/repo/blob/main/README.md", "/dq~n$0R-]VJ.pX*dDKtK2", "WVEOBO0P/FC-BC+-8593UUQ5:/"],
-    ["https://blog.example-widgets.net/2024/06/announcing-the-new-widget-configurator", "kd#IyiYiGz#-@Qe1WP71qSYF5!", "O$3852YF/AF24MOFRLW.W82MH35FM/"]
-  ];
+/*
+ * Pinned payloads per model version. If these fail, encoding behavior
+ * changed - which BREAKS EVERY ISSUED NEURAL LINK of that version.
+ * That must never happen by accident: the model files, the arithmetic
+ * coder, and the inference math (including its deterministic exp) all
+ * have to stay bit-compatible. Vectors for retired model versions are
+ * kept green forever against their archived model file.
+ * See model/README.md.
+ */
+const pinnedLinks = [
+  "https://www.example.com/some/path?a=1&b=2",
+  "https://en.wikipedia.org/wiki/Hammer",
+  "https://github.com/user/repo/blob/main/README.md",
+  "https://blog.example-widgets.net/2024/06/announcing-the-new-widget-configurator"
+];
+
+function checkVectors (vectors, vectorModel) {
   for (const [link, ascii, qr] of vectors) {
-    assert.equal(compressHybrid(link, outputAlphabetASCII, model), ascii);
-    assert.equal(compressHybrid(link, outputAlphabetQR, model), qr);
-    assert.equal(new URL(decompressHybrid(ascii, outputAlphabetASCII, model)).href,
+    assert.equal(compressHybrid(link, outputAlphabetASCII, vectorModel), ascii);
+    assert.equal(compressHybrid(link, outputAlphabetQR, vectorModel), qr);
+    assert.equal(new URL(decompressHybrid(ascii, outputAlphabetASCII, vectorModel)).href,
       new URL(link).href);
-    assert.equal(new URL(decompressHybrid(qr, outputAlphabetQR, model)).href,
+    assert.equal(new URL(decompressHybrid(qr, outputAlphabetQR, vectorModel)).href,
       new URL(link).href);
   }
+}
+
+test("pinned v1 payloads stay stable against the archived model", () => {
+  checkVectors([
+    [pinnedLinks[0], "XnE2w.Z((Ar+H4UO]:$", "6EI81FE:WFI/8IPJ3Q:O-:"],
+    [pinnedLinks[1], "XY)ICJh#", "CO0XB:$*:"],
+    [pinnedLinks[2], "/dq~n$0R-]VJ.pX*dDKtK2", "WVEOBO0P/FC-BC+-8593UUQ5:/"],
+    [pinnedLinks[3], "kd#IyiYiGz#-@Qe1WP71qSYF5!", "O$3852YF/AF24MOFRLW.W82MH35FM/"]
+  ], modelV1);
+});
+
+test("pinned v2 payloads stay stable", () => {
+  checkVectors([
+    [pinnedLinks[0], "$Q-gtbg+.'LjUAFA-", "KT79QRUW+*90A949+8A/"],
+    [pinnedLinks[1], "?r9)?8@", "PK3+O8RT"],
+    [pinnedLinks[2], "?O+UoHb62N6/FK_rEoI~", "+N6PPKWG5+0OJES24PM6/$Q*"],
+    [pinnedLinks[3], "Jo#z:yEW+jB$mrY[bxd2!", "1*AT7DJ/XR.8QGVXJHW$WST1"]
+  ], model);
+});
+
+test("v1 and v2 payloads refuse each other's models", () => {
+  const link = "https://www.example.com/cross-version";
+  const p1 = compressHybrid(link, outputAlphabetASCII, modelV1);
+  const p2 = compressHybrid(link, outputAlphabetASCII, model);
+  assert.equal(payloadSchemeVersion(p1, outputAlphabetASCII), 1);
+  assert.equal(payloadSchemeVersion(p2, outputAlphabetASCII), 2);
+  assert.equal(decompressHybrid(p1, outputAlphabetASCII, modelV1), link);
+  assert.equal(decompressHybrid(p2, outputAlphabetASCII, model), link);
+  assert.throws(() => decompressHybrid(p1, outputAlphabetASCII, model), /version/);
+  assert.throws(() => decompressHybrid(p2, outputAlphabetASCII, modelV1), /version/);
 });
 
 /** Rebuilds a model buffer with a different linkVersion in its header. */
@@ -222,13 +262,14 @@ test("payload versions route to the matching model", async () => {
   assert.equal(payloadSchemeVersion(payload, outputAlphabetASCII), 3);
   assert.equal(decompressHybrid(payload, outputAlphabetASCII, modelV3), link);
 
-  // The version-1 model must refuse a version-3 payload, and vice
+  // The latest model must refuse a version-3 payload, and vice
   // versa - silent cross-decoding would produce garbage URLs
   assert.throws(() => decompressHybrid(payload, outputAlphabetASCII, model),
     /version/);
-  const payloadV1 = compressHybrid(link, outputAlphabetASCII, model);
-  assert.equal(payloadSchemeVersion(payloadV1, outputAlphabetASCII), 1);
-  assert.throws(() => decompressHybrid(payloadV1, outputAlphabetASCII, modelV3),
+  const payloadLatest = compressHybrid(link, outputAlphabetASCII, model);
+  assert.equal(payloadSchemeVersion(payloadLatest, outputAlphabetASCII),
+    model.linkVersion);
+  assert.throws(() => decompressHybrid(payloadLatest, outputAlphabetASCII, modelV3),
     /version/);
 });
 
