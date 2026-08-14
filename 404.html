@@ -5,7 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ha.mr - link compressor</title>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Hammersmith+One&display=swap');
+    /* Self-hosted (see fonts/OFL.txt) - avoids a render-blocking
+       third-party request on every visit, including redirects */
+    @font-face {
+      font-family: "Hammersmith One";
+      font-style: normal;
+      font-weight: 400;
+      font-display: swap;
+      src: url("/fonts/hammersmith-one-latin.woff2") format("woff2");
+    }
     html, body {
       margin: 0;
       width: 100%;
@@ -125,7 +133,7 @@
     <h1 class="title">ha.mr</h1>
     <p class="subtitle">(read: "hammer")</p>
 
-    <input type="text" id="input-link" placeholder="https://some-long.link/" autofocus>
+    <input type="text" id="input-link" placeholder="https://some-long.link/" aria-label="Link to compress" autofocus>
     <details id="query-warning">
       <summary>Consider removing parameters...</summary>
       <br>
@@ -143,7 +151,7 @@
       <br><span id="output-ratio">&nbsp;</span>
     </p>
 
-    <image width="256" height="256" id="qrcode"></image>
+    <img width="256" height="256" id="qrcode" alt="QR code for the compressed link">
 
     <span id="qr-correct-level-container">
       <label>QR code error correction threshold</label>

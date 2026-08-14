@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { compress, decompress } from "./compress.js";
 import {
   outputAlphabetASCII,
@@ -22,7 +23,8 @@ if (input.toLowerCase().startsWith("http://ha.mr")) {
 }
 
 if (payload) {
-  const isQRCode = input[0] === "/";
+  // QR links carry the payload in the path ("/"); text links use the hash ("#")
+  const isQRCode = payload[0] === "/";
   payload = payload.slice(1);
   const useEmoji = Array.from(payload).some(c => !outputAlphabetASCII.includes(c));
   if (isQRCode) console.log(decompress(payload, outputAlphabetQR));
@@ -42,5 +44,5 @@ else if (alphabetName !== "ascii") {
 if (alphabetName === "qr") {
   console.log("HTTP://HA.MR/" + compress(input, alphabet));
 } else {
-  console.log("http://ha.mr#" + compress(input, alphabet));
+  console.log("https://ha.mr#" + compress(input, alphabet));
 }

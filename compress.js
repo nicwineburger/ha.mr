@@ -201,6 +201,14 @@ export function compress (input, alphabet) {
     .filter(c => c.length)
     .map(c => ({ type: "path", value: c }));
 
+  // Preserve a trailing slash on non-root paths as an empty final
+  // segment - some servers treat "/docs" and "/docs/" differently.
+  // The decoder already reconstructs empty segments correctly, so
+  // this doesn't change the payload format.
+  if (path.length > 1 && path.endsWith("/")) {
+    pathSegments.push({ type: "path", value: "" });
+  }
+
   // Add search/query parameters to path segments
   let queryParams = Array.from(url.searchParams)
     .flat()
@@ -214,7 +222,22 @@ export function compress (input, alphabet) {
 
   // Normalize path segment encoding
   for (const segment of pathSegments) {
-    segment.value = encodeURI(decodeURI(segment.value));
+    // Escape stray "%" characters that aren't part of a valid escape
+    // sequence - browsers tolerate them, but decodeURI throws
+    segment.value = segment.value.replace(/%(?![0-9a-fA-F]{2})/g, "%25");
+    try {
+      segment.value = encodeURI(decodeURI(segment.value));
+    } catch (e) {
+      // Hex-valid escapes that don't form valid UTF-8 (e.g. a lone
+      // "%C3") also throw. Keep those escapes verbatim and normalize
+      // only the literal characters between them.
+      segment.value = segment.value
+        .split(/(%[0-9a-fA-F]{2})/)
+        .map(part => /^%[0-9a-fA-F]{2}$/.test(part)
+          ? part.toUpperCase()
+          : encodeURI(part))
+        .join("");
+    }
   }
 
   // Encode path following domain segment-by-segment, using best algorithm for each
@@ -486,7 +509,9 @@ export function decompress (input, alphabet) {
         path += digit;
         if (digit === "%") {
           const byte = number % 256n;
-          path += byte.toString(16);
+          // Pad to two digits - a bare "%A" would swallow the next
+          // character as its second hex digit and corrupt the URL
+          path += byte.toString(16).padStart(2, "0").toUpperCase();
           number /= 256n;
         }
       }

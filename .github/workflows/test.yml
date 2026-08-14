@@ -1,0 +1,20 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run tests
+        run: npm test
+      - name: Check that index.html and 404.html are identical
+        # GitHub Pages needs 404.html as a real file, and QR-code links
+        # rely on it decoding payloads exactly like index.html does
+        run: diff index.html 404.html
