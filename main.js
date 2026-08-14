@@ -5,7 +5,7 @@ import {
   outputAlphabetEmoji
 } from "./alphabets.js";
 
-var settings = {
+const settings = {
   emoji: false,
   qr: false
 };
@@ -81,8 +81,8 @@ function updateOutput () {
       outputRatioElement.textContent = "Output is the same length as the input";
       outputRatioElement.style.color = "gray";
     }
-    outputLinkElement.textContent = `http://ha.mr#${output}`;
-    outputLinkElement.href = `http://ha.mr#${output}`;
+    outputLinkElement.textContent = `https://ha.mr#${output}`;
+    outputLinkElement.href = `https://ha.mr#${output}`;
     outputLinkElement.style.color = "";
     if (settings.qr) {
       const errorCorrection = ["L", "M", "Q", "H"][qrCodeCorrectionLevelElement.value];
@@ -131,7 +131,7 @@ inputLinkElement.addEventListener("input", updateOutput);
     // Decode hash value in case it's non-ASCII
     payload = decodeURIComponent(window.location.hash.slice(1));
     // Remove all whitespace - we never use whitespace when encoding hash values
-    payload = payload.replaceAll(" ", "");
+    payload = payload.replace(/\s+/g, "");
     // Check if input is pure ASCII - potentially unreliable?
     const useEmoji = Array.from(payload).some(c => !outputAlphabetASCII.includes(c));
     alphabet = useEmoji ? outputAlphabetEmoji : outputAlphabetASCII;
