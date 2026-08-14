@@ -5,6 +5,25 @@ import {
   outputAlphabetEmoji
 } from "./alphabets.js";
 
+/**
+ * The site adapts to whatever domain it's hosted on: output links and
+ * the displayed title are derived from the current origin, so forks
+ * don't need to change any code. When there's no usable origin (e.g.
+ * the page was opened from disk), fall back to the canonical domain.
+ */
+const isHosted = location.protocol === "http:" || location.protocol === "https:";
+const siteHost = (isHosted && location.host) || "ha.mr";
+const siteOrigin = isHosted && location.host
+  ? `${location.protocol}//${location.host}`
+  : `https://${siteHost}`;
+
+if (siteHost !== "ha.mr") {
+  document.title = `${siteHost} - link compressor`;
+  document.querySelector(".title").textContent = siteHost;
+  // The pronunciation hint only makes sense for the original domain
+  document.querySelector(".subtitle").style.display = "none";
+}
+
 const settings = {
   emoji: false,
   qr: false
@@ -67,7 +86,9 @@ function updateOutput () {
     } else {
       queryWarningElement.style.display = "none";
     }
-    const ratio = (1 - (countSymbols(output, alphabet) + 6) / inputNormalized.length) * 100;
+    // Overhead of the short link, not counting the protocol: the host
+    // plus the "#" separator
+    const ratio = (1 - (countSymbols(output, alphabet) + siteHost.length + 1) / inputNormalized.length) * 100;
     if (ratio < -300) {
       outputRatioElement.textContent = `Output is much larger than the input`;
       outputRatioElement.style.color = "rgb(255, 50, 50)";
@@ -81,14 +102,16 @@ function updateOutput () {
       outputRatioElement.textContent = "Output is the same length as the input";
       outputRatioElement.style.color = "gray";
     }
-    outputLinkElement.textContent = `https://ha.mr#${output}`;
-    outputLinkElement.href = `https://ha.mr#${output}`;
+    outputLinkElement.textContent = `${siteOrigin}#${output}`;
+    outputLinkElement.href = `${siteOrigin}#${output}`;
     outputLinkElement.style.color = "";
     if (settings.qr) {
       const errorCorrection = ["L", "M", "Q", "H"][qrCodeCorrectionLevelElement.value];
       qrCodeImage.style.display = "inline";
       qrCodeCorrectionLevelContainer.style.display = "inline";
-      let qrCodeLink = `HTTP://HA.MR/${compress(input, outputAlphabetQR)}`;
+      // Uppercase keeps the QR code in alphanumeric mode; hostnames
+      // only contain [a-z0-9.-], which all fit that character set
+      let qrCodeLink = `HTTP://${siteHost.toUpperCase()}/${compress(input, outputAlphabetQR)}`;
       QRCode.toDataURL(qrCodeLink, {
         errorCorrectionLevel: errorCorrection,
         scale: 8

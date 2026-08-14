@@ -6,20 +6,28 @@ import {
   outputAlphabetEmoji
 } from "./alphabets.js";
 
+// The domain used to build and recognize short links; set HAMR_DOMAIN
+// to use a self-hosted deployment (defaults to the original site)
+const domain = (process.env.HAMR_DOMAIN || "ha.mr").toLowerCase();
+
 const input = process.argv[2]?.trim();
 const alphabetName = process.argv[3]?.trim() || "ascii";
 if (!input) {
   console.error(`Usage: hamr <link> [ascii|qr|emoji]`);
+  console.error(`Set HAMR_DOMAIN to use a domain other than ha.mr.`);
   process.exit(1);
 }
 
 let payload = "";
-if (input.toLowerCase().startsWith("http://ha.mr")) {
-  payload = input.slice(12);
-} else if (input.toLowerCase().startsWith("https://ha.mr")) {
-  payload = input.slice(13);
-} else if (input.toLowerCase().startsWith("ha.mr")) {
-  payload = input.slice(5);
+const inputLower = input.toLowerCase();
+for (const prefix of [`https://${domain}`, `http://${domain}`, domain]) {
+  if (inputLower.startsWith(prefix)) {
+    const rest = input.slice(prefix.length);
+    // Only treat this as a short link if a payload separator follows,
+    // so e.g. "ha.mrs.example" still compresses as a regular link
+    if (rest[0] === "/" || rest[0] === "#") payload = rest;
+    break;
+  }
 }
 
 if (payload) {
@@ -42,7 +50,7 @@ else if (alphabetName !== "ascii") {
 }
 
 if (alphabetName === "qr") {
-  console.log("HTTP://HA.MR/" + compress(input, alphabet));
+  console.log(`HTTP://${domain.toUpperCase()}/` + compress(input, alphabet));
 } else {
-  console.log("https://ha.mr#" + compress(input, alphabet));
+  console.log(`https://${domain}#` + compress(input, alphabet));
 }

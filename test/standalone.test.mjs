@@ -11,6 +11,13 @@ function run (...args) {
   }).trim();
 }
 
+function runWithDomain (domain, ...args) {
+  return execFileSync(process.execPath, [cli, ...args], {
+    encoding: "utf8",
+    env: { ...process.env, HAMR_DOMAIN: domain }
+  }).trim();
+}
+
 test("CLI compresses and decodes text links", () => {
   const link = "https://www.example.com/some/path?a=1#b";
   const short = run(link);
@@ -36,6 +43,26 @@ test("CLI decodes emoji links", () => {
 test("CLI accepts links without a protocol prefix", () => {
   const short = run("https://example.com/x");
   assert.equal(run(short.replace("https://", "")), "https://example.com/x");
+});
+
+test("CLI builds and decodes links on a custom domain", () => {
+  const link = "https://www.example.com/some/path?a=1#b";
+  const short = runWithDomain("short.example", link);
+  assert.match(short, /^https:\/\/short\.example#/);
+  assert.equal(runWithDomain("short.example", short), link);
+});
+
+test("CLI builds and decodes QR links on a custom domain", () => {
+  const link = "https://www.example.com/test";
+  const short = runWithDomain("short.example", link, "qr");
+  assert.match(short, /^HTTP:\/\/SHORT\.EXAMPLE\//);
+  assert.equal(runWithDomain("short.example", short), link);
+});
+
+test("CLI treats domain-prefixed hostnames as links, not payloads", () => {
+  // "ha.mrs.example" starts with "ha.mr" but is a regular link
+  const short = run("https://ha.mrs.example/path");
+  assert.equal(run(short), "https://ha.mrs.example/path");
 });
 
 test("CLI rejects unknown alphabets", () => {

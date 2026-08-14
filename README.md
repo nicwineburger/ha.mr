@@ -34,6 +34,22 @@ Or install it as a global `hamr` command with `npm install -g .`.
 npm test
 ```
 
+## Hosting your own
+The site is fully portable: nothing about the compression or the UI is tied to the `ha.mr` domain. Output links, QR codes, and the displayed title all adapt to whatever domain the site is served from.
+
+To run your own instance:
+1. Fork this repository and enable GitHub Pages (or copy the files to any static web host).
+2. Replace the contents of `CNAME` with your own domain, or delete the file if you're not using a custom domain.
+3. Serve the site from the **root** of the domain. Text links (`https://your.domain#...`) work from any path, but QR-code links carry their payload in the URL path and rely on the `404.html` fallback at the domain root to decode them.
+
+Links are only decodable by a deployment of this codebase, but they are not tied to the domain that created them: the payload format is identical everywhere, so a link's path/fragment can be decoded by any instance (or by the CLI).
+
+For the command line tool, set the `HAMR_DOMAIN` environment variable to build and recognize short links on your domain:
+
+```sh
+HAMR_DOMAIN=your.domain node standalone.js "https://some-long.link/"
+```
+
 ## Known normalizations
 The compressor reproduces links exactly in the common case, but a few equivalent spellings are normalized (see `test/roundtrip.test.mjs` for the pinned-down list):
 - Percent-escape hex is uppercased, and escapes of unreserved characters (e.g. `%7E`) are decoded.
