@@ -102,7 +102,9 @@ checkpoint at step 48K.
 
 Under the revised $50 cap (original $20 cap + teacher/distill
 extension). No apps left running. The `hamr-gpu` volume (~9GB:
-corpus, packed windows, vocabs, checkpoints incl. the teacher) is
-retained for follow-up training; delete it if no more runs are
-planned — storage is pennies/month, the teacher checkpoint alone
-would cost ~$10 of A100 time to recreate.
+corpus, packed windows, vocabs, checkpoints) is retained for
+follow-up training; delete it if no more runs are planned — storage
+is pennies/month. The teacher's f16 weights are also archived on
+this branch under `teacher/` (split for GitHub's file-size limit),
+so only the fp32 optimizer-state checkpoint and the corpus would be
+lost with the volume.
