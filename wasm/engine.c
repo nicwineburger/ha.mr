@@ -1,9 +1,12 @@
 /**
  * @file WebAssembly transcription of the neural.js inference engine.
  *
- * MEASUREMENT PROTOTYPE - nothing here ships; neural.js stays the
- * production engine. The point of this file is to answer "how much
- * faster could the client be" without giving up determinism.
+ * PRODUCTION ENGINE, selected automatically by engine-select.js (repo
+ * root) whenever the runtime can load it. neural.js remains the
+ * reference implementation and the automatic fallback forever - this
+ * file exists to make the client faster without ever giving up
+ * determinism, and every acceptance check treats neural.js as ground
+ * truth.
  *
  * DETERMINISM BY FAITHFUL TRANSCRIPTION: WebAssembly f64 arithmetic
  * (+ - * / sqrt, floor) is IEEE-754 correctly rounded, exactly like

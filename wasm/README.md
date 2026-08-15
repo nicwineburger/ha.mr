@@ -1,11 +1,19 @@
-# WASM inference engine (measurement prototype)
+# WASM inference engine (production)
 
-Nothing in this directory ships. It exists to answer, with hard
-numbers, whether a WebAssembly inference engine is worth
-productionizing: how much faster the client gets, and whether the
-download shrinks. Results and the ship recommendation are in
-[REPORT.md](REPORT.md). The shipped engine (`neural.js`), the payload
-formats, and the model files are untouched.
+`engine.wasm` (built from `engine.c`) is the default inference engine
+in production: the website, the CLI, and the 404-page decode path all
+select it via `engine-select.js` (repo root) whenever the runtime can
+load it, falling back automatically and silently to the pure-JS engine
+(`neural.js`) otherwise. `neural.js` stays the reference
+implementation and the fallback forever - it is never removed, and
+every acceptance check treats it as ground truth. This directory
+started as a measurement prototype to answer whether a WASM engine was
+worth productionizing (results and the original recommendation are
+still in [REPORT.md](REPORT.md)); that recommendation was accepted, so
+`engine.js`/`engine.wasm` are now load-bearing, not just measurement
+tools. The payload formats and the model files are untouched -
+`engine.wasm` only changes how fast a payload gets produced, never
+what payload it is.
 
 ## Why WASM can be bit-identical (the design core)
 
@@ -49,12 +57,35 @@ version plus held-out URLs, in Node and headless Chromium
   encode/decode pipeline (chunking, tokenization search, payload
   framing) with the WASM engine underneath. Reuses the shipped
   `URLModel` loader and arithmetic coder.
+- `../engine-select.js` (repo root, next to `neural.js`/`hybrid.js`) —
+  the selection layer every production entry point (`main.js`,
+  `standalone.js`, the 404 decode path) goes through: feature-detects
+  by attempting to compile `engine.wasm` itself (no separate synthetic
+  SIMD probe), binds the winning engine to one loaded model, and falls
+  back to `neural.js` on any failure, silently and per model load.
 - `wasm.test.mjs` — bit-identity tests wired into `npm test`.
-- `verify.mjs`, `verify-browser.mjs` — full acceptance sweeps.
+- `verify.mjs`, `verify-browser.mjs` — full acceptance sweeps. Run
+  BOTH, in Node and in headless Chromium, after any `engine.wasm`
+  rebuild, before committing the new binary - `npm test` only runs a
+  fast subset (`wasm.test.mjs`) as a smoke check on every push, not
+  the full pinned-vector + held-out-URL sweep. The rebuild is not
+  approved until both sweeps report zero mismatches.
 - `bench.mjs`, `bench-browser.mjs` — ms/URL measurements (median,
   p90) for decode, encode fast path, encode with search.
-- `browser/` — static harness page + Playwright driver (Playwright
-  resolved from the environment; not a dependency).
+- `browser/` — static harness page (`harness.js`/`harness.html`) used
+  by the measurement scripts above, plus a shared Playwright driver
+  (`drive.mjs`, resolved from the environment; not a dependency) that
+  can navigate to any page - the harness for measurements, or `/`
+  (the real site) for `browser-production.test.mjs`, which confirms
+  the live page actually selects WASM and matches Node's payloads.
+- `browser-production.test.mjs` — Playwright-driven production
+  acceptance: loads the real `index.html`/`main.js`, checks the
+  debug-readable `globalThis.__hamrEngine.kind` flag reads `"wasm"`,
+  and diffs its rendered payload against Node's JS-engine payload for
+  a handful of links. Skips itself (with a stated reason, not a
+  failure) when no Chromium binary or Playwright install is found, so
+  it stays green on hosts without either while still running - and
+  actually asserting - wherever they're available.
 - `weights/` — transparent weight-compression experiment: gzip and
   brotli baselines vs an entropy-coded container (static rANS,
   order-1 nibbles) with a byte-identity round-trip check.
@@ -83,14 +114,26 @@ summation order is the compatibility surface.
 
 Determinism is additionally *tested*, not assumed: any rebuild must
 keep `npm test` green (bit-identity against the JS engine on pinned
-links of all three model versions) before the binary is committed.
+links of all three model versions), **and** must be confirmed with a
+full `wasm/verify.mjs` + `wasm/verify-browser.mjs` sweep (Node and
+Chromium, all pinned vectors plus held-out URLs) before the new binary
+is committed - `npm test`'s subset is a fast smoke check for every
+push, not the acceptance bar for a changed engine. This is now a
+production dependency, not a prototype: a bad rebuild ships in the
+next deploy.
 
 ## Running the measurements
 
 ```
-# bit-identity sweeps (urls file: one URL per line)
+# bit-identity sweeps (urls file: one URL per line) - required before
+# committing any engine.wasm rebuild
 node wasm/verify.mjs <urls-file> 100
 node wasm/verify-browser.mjs <urls-file> 100
+
+# selection + production-page acceptance (part of `npm test`)
+node --test wasm/wasm.test.mjs
+node --test wasm/browser-production.test.mjs
+node --test test/engine-select.test.mjs
 
 # speed (Node and headless Chromium), v3 and v2
 node wasm/bench.mjs <urls-file> 30 3

@@ -25,13 +25,19 @@ output row, or per `group` input columns when the manifest entry
 sets a group size (int4 packs two values per byte, low nibble first,
 stored as value + 8). The loader dequantizes to floats at load —
 integer times correctly-rounded f16 scale is exact — so inference
-math is identical for every format. Loaded and evaluated by
-`neural.js` in plain JavaScript — no runtime dependencies, no
-WebGPU/WASM, and only IEEE correctly-rounded operations so that
-encoding and decoding are bit-identical on every browser and
-platform. v3 files evaluate with a 4-way-unrolled matmul kernel
-(fixed summation order, still deterministic); v1/v2 files keep the
-original kernel forever, because their issued payloads pin its exact
+math is identical for every format. Loaded by `neural.js`, in plain
+JavaScript with no runtime dependencies. Evaluated by whichever
+inference engine `engine-select.js` selects — the production
+WebAssembly engine (`wasm/`) when the runtime can load it, `neural.js`
+itself otherwise (automatic, silent fallback) — both restricted to
+only IEEE correctly-rounded operations, and the WASM engine a
+verified-byte-identical transcription of `neural.js`, so encoding and
+decoding are bit-identical on every browser, platform, and engine.
+WebGPU is never used: its floating-point reduction order isn't
+controllable, which is disqualifying for this design. v3 files
+evaluate with a 4-way-unrolled matmul kernel (fixed summation order,
+still deterministic); v1/v2 files keep the original kernel forever,
+because their issued payloads pin its exact
 arithmetic.
 
 Payload version 3 also introduces **chunked coding**: a URL longer

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { compressHybrid, decompressHybrid, payloadSchemeVersion } from "./hybrid.js";
 import { cleanLink } from "./clean.js";
 import { URLModel } from "./neural.js";
+import { selectEngine, wasmModuleSource } from "./engine-select.js";
 import {
   outputAlphabetASCII,
   outputAlphabetQR,
@@ -15,9 +16,27 @@ async function loadModel (file) {
   const buffer = await readFile(new URL(file, import.meta.url));
   return new URLModel(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
 }
+
+/*
+ * Node always has WebAssembly, so the fallback here only guards file
+ * reads and instantiation, not feature availability - but it's the
+ * same selectEngine() as the browser, so it takes the same silent
+ * path if either ever fails. wasmModuleSource memoizes the compiled
+ * module across every selectEngine() call below, including the
+ * archived-model decode path, so it's read from disk once per run.
+ * HAMR_FORCE_ENGINE=js is an escape hatch for forcing the JS fallback
+ * (used by tests, and available to operators who hit a WASM problem
+ * in the field) without needing to actually break WebAssembly.
+ */
+const forceEngine = process.env.HAMR_FORCE_ENGINE === "js" ? "js" : null;
+const wasmSource = wasmModuleSource(
+  readFile(new URL("./wasm/engine.wasm", import.meta.url)));
+
 let model = null;
+let engine = null;
 try {
   model = await loadModel("./model/url-model.bin");
+  engine = await selectEngine(model, wasmSource, { force: forceEngine });
 } catch (e) {
   console.error("Warning: neural model unavailable, using classic compression only.");
 }
@@ -62,17 +81,22 @@ if (payload) {
   const alpha = isQRCode ? outputAlphabetQR
     : useEmoji ? outputAlphabetEmoji : outputAlphabetASCII;
   // Links made by older models decode with their archived model file
+  // and their own engine selection (engine.c handles both the v1/v2
+  // scalar kernel and the v3+ unrolled one, so archived versions get
+  // WASM too whenever it's available - see engine-select.js).
   let decodeModel = model;
+  let decodeEngine = engine;
   const version = payloadSchemeVersion(payload, alpha);
   if (version >= 1 && (!decodeModel || decodeModel.linkVersion !== version)) {
     try {
       decodeModel = await loadModel(`./model/url-model-v${version}.bin`);
+      decodeEngine = await selectEngine(decodeModel, wasmSource, { force: forceEngine });
     } catch (e) {
       console.error(`This link requires model version ${version} (model/url-model-v${version}.bin).`);
       process.exit(3);
     }
   }
-  console.log(decompressHybrid(payload, alpha, decodeModel));
+  console.log(decompressHybrid(payload, alpha, decodeModel, decodeEngine));
   process.exit(0);
 }
 
@@ -97,7 +121,7 @@ else if (alphabetName !== "ascii") {
 }
 
 if (alphabetName === "qr") {
-  console.log(`HTTP://${domain.toUpperCase()}/` + compressHybrid(link, alphabet, model));
+  console.log(`HTTP://${domain.toUpperCase()}/` + compressHybrid(link, alphabet, model, undefined, engine));
 } else {
-  console.log(`https://${domain}#` + compressHybrid(link, alphabet, model));
+  console.log(`https://${domain}#` + compressHybrid(link, alphabet, model, undefined, engine));
 }
