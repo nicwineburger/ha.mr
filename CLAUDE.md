@@ -67,9 +67,10 @@ decoded by `404.html`). Deployed on GitHub Pages from the repo root.
 
 ## Commands
 
-- `npm test` — full suite (70 tests): round-trips, normalizations,
-  pinned vectors per version, version routing, CLI. CI also diffs
-  `index.html`/`404.html`.
+- `npm test` — full suite (76 tests): round-trips, normalizations,
+  pinned vectors per version, version routing, quantized-loader
+  checks, chunked coding, CLI. CI also diffs `index.html`/`404.html`.
+  The v3 model makes the suite take a few minutes of CPU.
 - `node model/benchmark.mjs <urls-file> [limit]` — real-coder
   benchmark vs classic, verifies every round-trip.
 - CPU experiments: `model/harness/` (see its README; config-driven,
