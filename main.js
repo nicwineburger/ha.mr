@@ -87,20 +87,48 @@ qrCodeCorrectionLevelElement.addEventListener("change", updateOutput);
 
 /**
  * Neural encoding takes a few hundred milliseconds, too slow to run on
- * every keystroke. Each input change renders the classic result
- * immediately, then upgrades to the hybrid (best-of-both) result once
- * the input has been idle briefly.
+ * every keystroke - and its tokenization search costs ~10x greedy on
+ * top. Each input change therefore renders in stages, each strictly
+ * shrinking the payload: the classic result immediately, the greedy
+ * hybrid result once the input has been idle briefly, and the searched
+ * hybrid result once it has clearly settled. New input cancels the
+ * pending upgrades, and every render re-reads the input field, so a
+ * slow stage can never display a stale link.
  */
 let neuralTimer = null;
+let searchTimer = null;
 function updateOutput () {
   renderOutput(null);
   if (model) {
     clearTimeout(neuralTimer);
-    neuralTimer = setTimeout(() => renderOutput(model), 200);
+    clearTimeout(searchTimer);
+    neuralTimer = setTimeout(() => renderOutput(model, { search: false }), 200);
+    searchTimer = setTimeout(() => renderOutput(model, { search: true }), 800);
   }
 }
 
-function renderOutput (activeModel) {
+/**
+ * Compresses through the hybrid path, memoizing searched results:
+ * re-renders of an unchanged input (settings toggles) reuse the
+ * previous search instead of paying for it again.
+ */
+const searchCache = { input: null, results: new Map() };
+function hybridPayload (input, alphabet, activeModel, neuralOptions) {
+  if (!activeModel || !neuralOptions || !neuralOptions.search) {
+    return compressHybrid(input, alphabet, activeModel, neuralOptions);
+  }
+  if (searchCache.input !== input) {
+    searchCache.input = input;
+    searchCache.results.clear();
+  }
+  if (!searchCache.results.has(alphabet)) {
+    searchCache.results.set(alphabet,
+      compressHybrid(input, alphabet, activeModel, neuralOptions));
+  }
+  return searchCache.results.get(alphabet);
+}
+
+function renderOutput (activeModel, neuralOptions) {
   let input = inputLinkElement.value.trim();
   // Cleaning is lossy (the short link decodes to the cleaned URL), so
   // it only happens when the checkbox is on, and the stripped
@@ -119,7 +147,7 @@ function renderOutput (activeModel) {
   }
   try {
     const alphabet = settings.emoji ? outputAlphabetEmoji : outputAlphabetASCII;
-    const output = compressHybrid(input, alphabet, activeModel);
+    const output = hybridPayload(input, alphabet, activeModel, neuralOptions);
     let inputNormalized = input;
     if (input.startsWith("https://")) {
       inputNormalized = input.slice(8);
@@ -163,7 +191,7 @@ function renderOutput (activeModel) {
       qrCodeCorrectionLevelContainer.style.display = "inline";
       // Uppercase keeps the QR code in alphanumeric mode; hostnames
       // only contain [a-z0-9.-], which all fit that character set
-      let qrCodeLink = `HTTP://${siteHost.toUpperCase()}/${compressHybrid(input, outputAlphabetQR, activeModel)}`;
+      let qrCodeLink = `HTTP://${siteHost.toUpperCase()}/${hybridPayload(input, outputAlphabetQR, activeModel, neuralOptions)}`;
       QRCode.toDataURL(qrCodeLink, {
         errorCorrectionLevel: errorCorrection,
         scale: 8

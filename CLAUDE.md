@@ -39,10 +39,15 @@ decoded by `404.html`). Deployed on GitHub Pages from the repo root.
    ship the new one as `url-model.bin`, add new pinned vectors, keep
    every old version's vectors green forever. Procedure in
    `model/README.md`.
-3. **Pinned vectors** in `test/neural.test.mjs` freeze
-   payload bits per model version. If one fails, you changed encoding
-   behavior — fix the change, don't update the vector (only a NEW
-   version legitimately adds vectors).
+3. **Pinned vectors** in `test/neural.test.mjs` come in two kinds.
+   *Decode vectors* (payload → URL) freeze compatibility with issued
+   links; they are NEVER touched — if one fails, you changed decode
+   behavior, fix the change. *Encode vectors* (URL → payload) pin the
+   current encoder's exact output; they may be regenerated ONLY by a
+   deliberate encode-side improvement (e.g. the tokenization search),
+   in which case the superseded encode outputs are demoted to
+   decode-only vectors, kept green forever. A NEW model version adds
+   vectors; it never edits older versions'.
 4. **Data splits are content-hashed** (`sha1(url) % 100` buckets in
    the harness corpus builders). Never change the bucket function or
    fractions — holdout comparability across all past campaigns
@@ -53,7 +58,7 @@ decoded by `404.html`). Deployed on GitHub Pages from the repo root.
 
 ## Commands
 
-- `npm test` — full suite (37 tests): round-trips, normalizations,
+- `npm test` — full suite (70 tests): round-trips, normalizations,
   pinned vectors per version, version routing, CLI. CI also diffs
   `index.html`/`404.html`.
 - `node model/benchmark.mjs <urls-file> [limit]` — real-coder

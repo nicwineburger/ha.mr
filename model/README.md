@@ -27,6 +27,17 @@ BPE over separator-delimited URL chunks, then applied greedily — an
 exact string operation, identical in the Python trainer and the JS
 engine. v1-format files (no `tokens`; character-level) still load.
 
+At encode time, `neural.js` additionally beam-searches alternative
+segmentations of the URL: the decoder never re-tokenizes — it
+arithmetic-decodes a symbol stream and concatenates the tokens'
+strings — so any segmentation that concatenates back to the URL
+decodes identically, and the encoder keeps whichever candidate
+payload is genuinely smallest (greedy is always among the candidates,
+so payloads never grow). This is purely encoder behavior: payload
+format, decoders, and already-issued links are unaffected. The
+archived version-1 model keeps the plain greedy encoder, so its
+pinned payload bits stay put.
+
 ## Architecture
 
 - 1024-token vocabulary (~2.1 characters/token on URLs)
