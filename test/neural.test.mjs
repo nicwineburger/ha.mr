@@ -6,6 +6,7 @@ import {
   URLModel,
   neuralCompressToNumber,
   neuralDecompressNumber,
+  modelProbabilities,
   payloadVersion
 } from "../neural.js";
 import {
@@ -166,6 +167,43 @@ test("hybrid without a model equals classic compression", () => {
   }
 });
 
+/**
+ * Mirrors the pre-search encoder: greedy tokenization fed straight
+ * into the arithmetic coder, then the payload framing. The searched
+ * encoder must never do worse than this baseline.
+ */
+function greedyNeuralNumber (model, link) {
+  const url = new URL(link);
+  const isHTTPS = url.protocol === "https:";
+  const symbols = model.tokenize(url.href.slice(isHTTPS ? 8 : 7));
+  symbols.push(0); // EOS
+  const bits = arithmeticEncode(symbols, modelProbabilities(model));
+  let number = 1n;
+  for (const bit of bits) number = (number << 1n) | BigInt(bit);
+  number = (number << 1n) | (isHTTPS ? 1n : 0n);
+  const version = BigInt(model.linkVersion);
+  return (number << (version + 1n)) | ((1n << version) - 1n);
+}
+
+test("searched payloads never exceed greedy payloads", () => {
+  for (const link of neuralCases) {
+    const searched = neuralCompressToNumber(model, link);
+    assert.ok(searched <= greedyNeuralNumber(model, link),
+      `search must not lose to greedy for ${link}`);
+  }
+});
+
+test("encoding is deterministic", () => {
+  // The tokenization search must break ties consistently: the same
+  // link always yields the same payload
+  for (const link of neuralCases) {
+    assert.equal(compressHybrid(link, outputAlphabetASCII, model),
+      compressHybrid(link, outputAlphabetASCII, model));
+    assert.equal(compressHybrid(link, outputAlphabetQR, model),
+      compressHybrid(link, outputAlphabetQR, model));
+  }
+});
+
 test("classic payloads decode through the hybrid path", () => {
   // Links encoded before the neural coder existed (or by clients
   // without the model) must keep decoding identically
@@ -178,13 +216,22 @@ test("classic payloads decode through the hybrid path", () => {
 });
 
 /*
- * Pinned payloads per model version. If these fail, encoding behavior
- * changed - which BREAKS EVERY ISSUED NEURAL LINK of that version.
- * That must never happen by accident: the model files, the arithmetic
- * coder, and the inference math (including its deterministic exp) all
- * have to stay bit-compatible. Vectors for retired model versions are
- * kept green forever against their archived model file.
- * See model/README.md.
+ * Pinned payloads per model version, in two kinds:
+ *
+ * - DECODE vectors (payload -> URL) freeze compatibility with issued
+ *   links. If one fails, decode behavior changed - which BREAKS EVERY
+ *   ISSUED NEURAL LINK of that version. That must never happen: the
+ *   model files, the arithmetic coder, and the inference math
+ *   (including its deterministic exp) all have to stay bit-compatible.
+ *   These vectors are kept green forever, retired model versions
+ *   included (against their archived model file).
+ * - ENCODE vectors (URL -> payload) pin the current encoder's exact
+ *   output bits. They may be regenerated only by a deliberate
+ *   encode-side improvement (like the tokenization search), and the
+ *   superseded encode outputs are then demoted to decode-only vectors
+ *   above all else - links carrying them are already in the wild.
+ *
+ * See model/README.md and the invariants in CLAUDE.md.
  */
 const pinnedLinks = [
   "https://www.example.com/some/path?a=1&b=2",
@@ -214,12 +261,42 @@ test("pinned v1 payloads stay stable against the archived model", () => {
 });
 
 test("pinned v2 payloads stay stable", () => {
+  // The tokenization search ties greedy on these links, and ties
+  // resolve to greedy, so these vectors survived the search's
+  // introduction unchanged
   checkVectors([
     [pinnedLinks[0], "$Q-gtbg+.'LjUAFA-", "KT79QRUW+*90A949+8A/"],
     [pinnedLinks[1], "?r9)?8@", "PK3+O8RT"],
     [pinnedLinks[2], "?O+UoHb62N6/FK_rEoI~", "+N6PPKWG5+0OJES24PM6/$Q*"],
     [pinnedLinks[3], "Jo#z:yEW+jB$mrY[bxd2!", "1*AT7DJ/XR.8QGVXJHW$WST1"]
   ], model);
+});
+
+test("searched v2 payloads improve on superseded greedy payloads", () => {
+  // Links where the tokenization search beats greedy longest-match.
+  // Rows: link, the payloads the pre-search encoder issued for it
+  // (decode-only vectors - such links are in the wild forever), then
+  // the searching encoder's pinned outputs.
+  const cases = [
+    ["https://illashbyilly.com.au/collections/eye-lashes",
+      "$Qk+YKh1Iww?JP+-&", "758DO5+*RW1O2U-5.E6*",
+      "ey$xIm[4~tdwDt[", "-UY.J--NKQ7H6ZDUA0"],
+    ["https://www.dyson.com.ro/asistenta-dyson/contactati-ne",
+      "5p-LrY0O]$Z/B,;c63x&", "8XV76LO**HNM/E*B1CC4PYC",
+      "?.z1Xyf&vrvphXZ)/9W", "9ZZ$A4XKAQQDLA8*KAL9SI*"]
+  ];
+  for (const [link, greedyAscii, greedyQr, ascii, qr] of cases) {
+    // Superseded greedy payloads must decode forever
+    assert.equal(decompressHybrid(greedyAscii, outputAlphabetASCII, model), link);
+    assert.equal(decompressHybrid(greedyQr, outputAlphabetQR, model), link);
+    // Current encoder output, never larger than what greedy issued
+    assert.equal(compressHybrid(link, outputAlphabetASCII, model), ascii);
+    assert.equal(compressHybrid(link, outputAlphabetQR, model), qr);
+    assert.ok(ascii.length <= greedyAscii.length, `ascii regression for ${link}`);
+    assert.ok(qr.length <= greedyQr.length, `qr regression for ${link}`);
+    assert.equal(decompressHybrid(ascii, outputAlphabetASCII, model), link);
+    assert.equal(decompressHybrid(qr, outputAlphabetQR, model), link);
+  }
 });
 
 test("v1 and v2 payloads refuse each other's models", () => {

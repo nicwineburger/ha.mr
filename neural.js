@@ -58,6 +58,34 @@ function detExp (x) {
 }
 
 /**
+ * Deterministic base-2 logarithm, likewise built only from
+ * correctly-rounded operations: exact power-of-two range reduction,
+ * then a fixed-order atanh series. Used to score candidate
+ * tokenizations at encode time; scores feed payload selection, so
+ * they must be bit-identical across engines for every encoder to
+ * produce the same payload.
+ * @param {number} x Argument, must be >= 0 and finite
+ * @returns {number} log2(x), or -Infinity for zero
+ */
+function detLog2 (x) {
+  if (x === 0) return -Infinity;
+  let e = 0;
+  while (x < 1) { x *= 2; e --; }
+  while (x >= 2) { x *= 0.5; e ++; }
+  // ln(m) = 2 atanh(z) with z = (m-1)/(m+1) in [0, 1/3); the series
+  // gains ~3 bits per term, so 14 terms reach double precision
+  const z = (x - 1) / (x + 1);
+  const z2 = z * z;
+  let term = z;
+  let sum = z;
+  for (let i = 3; i <= 29; i += 2) {
+    term *= z2;
+    sum += term / i;
+  }
+  return e + 2 * sum * INV_LN2;
+}
+
+/**
  * In-place softmax over a Float64Array using deterministic exp.
  * @param {Float64Array} x Logits, replaced by probabilities
  */
@@ -223,89 +251,98 @@ export class URLModel {
   /**
    * Starts an incremental inference session (with per-layer key/value
    * caches, so each fed token costs one transformer step, not a full
-   * reprocessing of the context).
-   * @returns {{feed: (id: number) => Float64Array}}
+   * reprocessing of the context). `fork` clones the session state so
+   * the encoder's tokenization search can branch hypotheses without
+   * re-feeding their shared prefix; forks share the per-position
+   * key/value arrays, which are written once and only read afterwards,
+   * so a fork costs pointer copies, not recomputation.
+   * @returns {{feed: (id: number) => Float64Array, fork: () => object}}
    *  `feed` consumes one token id and returns next-token logits
    */
   session () {
     const { dim, heads, layers, mlpDim, vocab, maxLen, tensors } = this;
     const headDim = dim / heads;
     const attnScale = 1 / Math.sqrt(headDim);
-    // Per-layer caches of past keys/values, laid out per position
-    const kCache = [];
-    const vCache = [];
-    for (let l = 0; l < layers; l ++) {
-      kCache.push([]);
-      vCache.push([]);
-    }
-    let position = 0;
 
-    const x = new Float64Array(dim);
-    const h = new Float64Array(dim);
-    const qkv = new Float64Array(3 * dim);
-    const attnOut = new Float64Array(dim);
-    const proj = new Float64Array(dim);
-    const mlp = new Float64Array(mlpDim);
-    const logits = new Float64Array(vocab);
+    const spawn = (kInit, vInit, positionInit) => {
+      // Per-layer caches of past keys/values, laid out per position
+      const kCache = kInit.map(layer => layer.slice());
+      const vCache = vInit.map(layer => layer.slice());
+      let position = positionInit;
 
-    const feed = (id) => {
-      if (position >= maxLen) throw "Model context window exceeded.";
-      const embed = tensors["embed"];
-      const pos = tensors["pos"];
-      for (let i = 0; i < dim; i ++) {
-        x[i] = embed[id * dim + i] + pos[position * dim + i];
-      }
+      const x = new Float64Array(dim);
+      const h = new Float64Array(dim);
+      const qkv = new Float64Array(3 * dim);
+      const attnOut = new Float64Array(dim);
+      const proj = new Float64Array(dim);
+      const mlp = new Float64Array(mlpDim);
+      const logits = new Float64Array(vocab);
 
-      for (let l = 0; l < layers; l ++) {
-        // Attention
-        rmsNorm(x, tensors[`b${l}.norm1`], h);
-        matmul(tensors[`b${l}.qkv`], 3 * dim, dim, h, qkv);
-        kCache[l].push(qkv.slice(dim, 2 * dim));
-        vCache[l].push(qkv.slice(2 * dim, 3 * dim));
-        const keys = kCache[l];
-        const values = vCache[l];
-        const scores = new Float64Array(keys.length);
-        for (let head = 0; head < heads; head ++) {
-          const base = head * headDim;
-          for (let j = 0; j < keys.length; j ++) {
-            let sum = 0;
-            const k = keys[j];
-            for (let i = 0; i < headDim; i ++) {
-              sum += qkv[base + i] * k[base + i];
-            }
-            scores[j] = sum * attnScale;
-          }
-          softmax(scores);
-          for (let i = 0; i < headDim; i ++) attnOut[base + i] = 0;
-          for (let j = 0; j < values.length; j ++) {
-            const v = values[j];
-            const weight = scores[j];
-            for (let i = 0; i < headDim; i ++) {
-              attnOut[base + i] += weight * v[base + i];
-            }
-          }
+      const feed = (id) => {
+        if (position >= maxLen) throw "Model context window exceeded.";
+        const embed = tensors["embed"];
+        const pos = tensors["pos"];
+        for (let i = 0; i < dim; i ++) {
+          x[i] = embed[id * dim + i] + pos[position * dim + i];
         }
-        matmul(tensors[`b${l}.proj`], dim, dim, attnOut, proj);
-        for (let i = 0; i < dim; i ++) x[i] += proj[i];
 
-        // MLP
-        rmsNorm(x, tensors[`b${l}.norm2`], h);
-        matmul(tensors[`b${l}.up`], mlpDim, dim, h, mlp);
-        for (let i = 0; i < mlpDim; i ++) {
-          if (mlp[i] < 0) mlp[i] = 0;
+        for (let l = 0; l < layers; l ++) {
+          // Attention
+          rmsNorm(x, tensors[`b${l}.norm1`], h);
+          matmul(tensors[`b${l}.qkv`], 3 * dim, dim, h, qkv);
+          kCache[l].push(qkv.slice(dim, 2 * dim));
+          vCache[l].push(qkv.slice(2 * dim, 3 * dim));
+          const keys = kCache[l];
+          const values = vCache[l];
+          const scores = new Float64Array(keys.length);
+          for (let head = 0; head < heads; head ++) {
+            const base = head * headDim;
+            for (let j = 0; j < keys.length; j ++) {
+              let sum = 0;
+              const k = keys[j];
+              for (let i = 0; i < headDim; i ++) {
+                sum += qkv[base + i] * k[base + i];
+              }
+              scores[j] = sum * attnScale;
+            }
+            softmax(scores);
+            for (let i = 0; i < headDim; i ++) attnOut[base + i] = 0;
+            for (let j = 0; j < values.length; j ++) {
+              const v = values[j];
+              const weight = scores[j];
+              for (let i = 0; i < headDim; i ++) {
+                attnOut[base + i] += weight * v[base + i];
+              }
+            }
+          }
+          matmul(tensors[`b${l}.proj`], dim, dim, attnOut, proj);
+          for (let i = 0; i < dim; i ++) x[i] += proj[i];
+
+          // MLP
+          rmsNorm(x, tensors[`b${l}.norm2`], h);
+          matmul(tensors[`b${l}.up`], mlpDim, dim, h, mlp);
+          for (let i = 0; i < mlpDim; i ++) {
+            if (mlp[i] < 0) mlp[i] = 0;
+          }
+          matmul(tensors[`b${l}.down`], dim, mlpDim, mlp, proj);
+          for (let i = 0; i < dim; i ++) x[i] += proj[i];
         }
-        matmul(tensors[`b${l}.down`], dim, mlpDim, mlp, proj);
-        for (let i = 0; i < dim; i ++) x[i] += proj[i];
-      }
 
-      rmsNorm(x, tensors["norm"], h);
-      // Output head is tied to the embedding table
-      matmul(embed, vocab, dim, h, logits);
-      position ++;
-      return logits;
+        rmsNorm(x, tensors["norm"], h);
+        // Output head is tied to the embedding table
+        matmul(embed, vocab, dim, h, logits);
+        position ++;
+        return logits;
+      };
+
+      const fork = () => spawn(kCache, vCache, position);
+
+      return { feed, fork };
     };
 
-    return { feed };
+    const empty = [];
+    for (let l = 0; l < layers; l ++) empty.push([]);
+    return spawn(empty, empty, 0);
   }
 }
 
@@ -316,7 +353,7 @@ export class URLModel {
  * @param {URLModel} model Loaded model
  * @returns {(context: number[]) => Float64Array} Probability callback
  */
-function modelProbabilities (model) {
+export function modelProbabilities (model) {
   const session = model.session();
   let fed = 0;
   return (context) => {
@@ -340,6 +377,103 @@ function modelProbabilities (model) {
 }
 
 /*
+ * Encoder-side tokenization search. Greedy longest-match is only one
+ * of many segmentations whose concatenation equals the URL text, and
+ * the decoder never re-tokenizes - it arithmetic-decodes a symbol
+ * stream and concatenates the symbols' strings - so ANY segmentation
+ * decodes to the same URL. The encoder is therefore free to search
+ * segmentations for the one the model predicts most cheaply. This is
+ * a pure encode-time improvement: payload format, decode behavior,
+ * and already-issued links are untouched.
+ */
+const BEAM_WIDTH = 4;
+const FINAL_CANDIDATES = 2;
+
+/**
+ * Beam-searches segmentations of `text` over the model's token list,
+ * returning the estimated-cheapest candidates first. Costs are
+ * accumulated -log2 probabilities including the terminating EOS - an
+ * estimate, since the coder quantizes frequencies, which is why the
+ * caller re-encodes the leading candidates with the real coder and
+ * compares actual payloads.
+ * @param {URLModel} model Loaded model with a token list
+ * @param {string} text Scheme-less URL text
+ * @returns {number[][]} Candidate symbol sequences (without EOS)
+ */
+function searchSegmentations (model, text) {
+  // Same length budget the greedy path is subject to: the session
+  // fits a priming EOS, the tokens, and a terminating EOS
+  const maxSymbols = model.maxLen - 2;
+  const length = text.length;
+
+  const softmaxed = (logits) => {
+    const probs = logits.slice(); // `feed` reuses its logits buffer
+    softmax(probs);
+    return probs;
+  };
+
+  // Hypotheses are compared by cost, then by symbol sequence: costs
+  // are deterministic (detExp/detLog2 only), so the full ordering -
+  // and with it the chosen payload - is identical on every engine
+  const compare = (a, b) => {
+    if (a.cost !== b.cost) return a.cost < b.cost ? -1 : 1;
+    const n = Math.min(a.symbols.length, b.symbols.length);
+    for (let i = 0; i < n; i ++) {
+      if (a.symbols[i] !== b.symbols[i]) return a.symbols[i] - b.symbols[i];
+    }
+    return a.symbols.length - b.symbols.length;
+  };
+
+  // arrivals[p] collects hypotheses whose tokens cover text[0..p);
+  // every parent sits at an earlier position, so by the time p is
+  // processed the list is complete and can be pruned to the beam.
+  // Sessions are forked lazily - only hypotheses that survive pruning
+  // pay for a transformer step.
+  const arrivals = [];
+  for (let p = 0; p <= length; p ++) arrivals.push([]);
+  const finals = [];
+
+  const expand = (hyp, p) => {
+    if (hyp.symbols.length >= maxSymbols) return;
+    const limit = Math.min(model.maxTokenLength, length - p);
+    for (let l = 1; l <= limit; l ++) {
+      const id = model.tokenIds.get(text.slice(p, p + l));
+      if (id === undefined) continue;
+      arrivals[p + l].push({
+        parent: hyp,
+        id,
+        cost: hyp.cost - detLog2(hyp.probs[id]),
+        symbols: hyp.symbols.concat(id)
+      });
+    }
+  };
+
+  const root = { session: model.session(), symbols: [], cost: 0 };
+  root.probs = softmaxed(root.session.feed(EOS));
+  expand(root, 0);
+
+  for (let p = 1; p <= length; p ++) {
+    const candidates = arrivals[p];
+    if (!candidates.length) continue;
+    candidates.sort(compare);
+    for (const candidate of candidates.slice(0, BEAM_WIDTH)) {
+      const session = candidate.parent.session.fork();
+      const probs = softmaxed(session.feed(candidate.id));
+      if (p < length) {
+        expand({ session, symbols: candidate.symbols,
+          cost: candidate.cost, probs }, p);
+      } else {
+        finals.push({ symbols: candidate.symbols,
+          cost: candidate.cost - detLog2(probs[EOS]) });
+      }
+    }
+  }
+
+  finals.sort(compare);
+  return finals.slice(0, FINAL_CANDIDATES).map(final => final.symbols);
+}
+
+/*
  * Payload format (bits from least significant):
  *   marker   - unary payload version: N one-bits then a zero, where
  *              N is the encoding model's linkVersion (classic
@@ -349,6 +483,28 @@ function modelProbabilities (model) {
  *   payload  - arithmetic-coded bits of the scheme-less URL text,
  *              preceded by a sentinel 1 bit to preserve leading zeros
  */
+
+/**
+ * Arithmetic-codes one symbol sequence and frames it as a payload
+ * number (sentinel bit, isHTTPS bit, unary version marker).
+ * @param {URLModel} model Loaded model
+ * @param {number[]} symbols Symbol ids (without EOS)
+ * @param {boolean} isHTTPS Whether the link scheme is https
+ * @returns {BigInt} Payload number
+ */
+function encodeSymbols (model, symbols, isHTTPS) {
+  const bits = arithmeticEncode(symbols.concat(EOS), modelProbabilities(model));
+
+  let number = 1n; // Sentinel to preserve leading zero bits
+  for (const bit of bits) {
+    number = (number << 1n) | BigInt(bit);
+  }
+  number = (number << 1n) | (isHTTPS ? 1n : 0n);
+  // Unary version marker matching the model that encoded this payload
+  const version = BigInt(model.linkVersion);
+  number = (number << (version + 1n)) | ((1n << version) - 1n);
+  return number;
+}
 
 /**
  * Compresses a link with the neural coder into a raw payload number.
@@ -368,24 +524,36 @@ export function neuralCompressToNumber (model, input) {
   const isHTTPS = url.protocol === "https:";
   const text = url.href.slice(isHTTPS ? 8 : 7);
 
-  // Tokenize; bail out on anything the model can't represent
-  const symbols = model.tokenize(text);
-  if (symbols === null) return null;
-  symbols.push(EOS);
+  // Greedy tokenization; bail out on anything the model can't
+  // represent (every printable character has a single-char token, so
+  // a greedy failure means no segmentation exists at all)
+  const greedy = model.tokenize(text);
+  if (greedy === null) return null;
   // Sequence overhead: one priming EOS plus the terminating EOS
-  if (symbols.length + 1 > model.maxLen) return null;
+  if (greedy.length + 2 > model.maxLen) return null;
 
-  const bits = arithmeticEncode(symbols, modelProbabilities(model));
-
-  let number = 1n; // Sentinel to preserve leading zero bits
-  for (const bit of bits) {
-    number = (number << 1n) | BigInt(bit);
+  // Search for cheaper segmentations. Character-level models have
+  // only one segmentation, and version-1 token payload bits are
+  // pinned to greedy (that model stays deployed purely to decode old
+  // links), so the search applies to version 2 onwards.
+  const candidates = [greedy];
+  if (model.tokens && model.linkVersion >= 2) {
+    candidates.push(...searchSegmentations(model, text));
   }
-  number = (number << 1n) | (isHTTPS ? 1n : 0n);
-  // Unary version marker matching the model that encoded this payload
-  const version = BigInt(model.linkVersion);
-  number = (number << (version + 1n)) | ((1n << version) - 1n);
-  return number;
+
+  // Greedy comes first, so on a tie the payload matches the
+  // pre-search encoder's output
+  let best = null;
+  const seen = new Set();
+  for (const symbols of candidates) {
+    const key = symbols.join(",");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const number = encodeSymbols(model, symbols, isHTTPS);
+    // Smaller payload number = same or fewer output symbols
+    if (best === null || number < best) best = number;
+  }
+  return best;
 }
 
 /**
