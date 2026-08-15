@@ -61,12 +61,35 @@ def strip_scheme(u):
 def build_model(cfg, vocab_size):
     """Copied from ../experiment.py build_model; the only change is
     device-aware torch.arange so it runs on CUDA. Parameter names and
-    shapes are identical, so checkpoints interchange freely."""
+    shapes are identical, so checkpoints interchange freely.
+
+    cfg["qat"] = "int8" | "int4" switches the block Linears to
+    fake-quantized forward passes (symmetric per-output-channel
+    scales, straight-through estimator), matching the v3 export and
+    the neural.js dequantizing loader. Embedding/positions/norms stay
+    f16 - they are small and the tied head is quality-sensitive."""
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
 
     DIM, HEADS, MLP = cfg["dim"], cfg["heads"], cfg["mlp"]
+
+    qat = cfg.get("qat")
+    if qat:
+        qmax = {"int8": 127, "int4": 7}[qat]
+        qmin = {"int8": -127, "int4": -8}[qat]
+
+        def fake_quant(w):
+            scale = w.detach().abs().amax(dim=1, keepdim=True) \
+                .clamp(min=1e-6) / qmax
+            wq = (w / scale).round().clamp(qmin, qmax) * scale
+            return w + (wq - w).detach()
+
+        class Lin(nn.Linear):
+            def forward(self, x):
+                return F.linear(x, fake_quant(self.weight))
+    else:
+        Lin = nn.Linear
 
     class RMSNorm(nn.Module):
         def __init__(self, dim):
@@ -79,11 +102,11 @@ def build_model(cfg, vocab_size):
         def __init__(self):
             super().__init__()
             self.norm1 = RMSNorm(DIM)
-            self.qkv = nn.Linear(DIM, 3 * DIM, bias=False)
-            self.proj = nn.Linear(DIM, DIM, bias=False)
+            self.qkv = Lin(DIM, 3 * DIM, bias=False)
+            self.proj = Lin(DIM, DIM, bias=False)
             self.norm2 = RMSNorm(DIM)
-            self.up = nn.Linear(DIM, MLP, bias=False)
-            self.down = nn.Linear(MLP, DIM, bias=False)
+            self.up = Lin(DIM, MLP, bias=False)
+            self.down = Lin(MLP, DIM, bias=False)
         def forward(self, x):
             B, T, C = x.shape
             h = self.norm1(x)
@@ -397,9 +420,31 @@ def eval_shipped(bin_name: str = "url-model.bin"):
                 "norm": "norm.g"}
     for t in header["tensors"]:
         n = int(np.prod(t["shape"]))
-        arr = np.frombuffer(raw, dtype=np.float16, count=n,
-                            offset=offset).astype(np.float32)
-        offset += n * 2
+        dtype = t.get("dtype", "f16")
+        if dtype in ("int8", "int4"):
+            # v3: per-row f16 scales, then row-major int values
+            rows = t["shape"][0]
+            cols = n // rows
+            scales = np.frombuffer(raw, dtype=np.float16, count=rows,
+                                   offset=offset).astype(np.float32)
+            offset += rows * 2
+            if dtype == "int8":
+                q = np.frombuffer(raw, dtype=np.int8, count=n,
+                                  offset=offset).astype(np.float32)
+                offset += n
+            else:
+                packed = np.frombuffer(raw, dtype=np.uint8, count=n // 2,
+                                       offset=offset)
+                offset += n // 2
+                q = np.empty(n, dtype=np.float32)
+                q[0::2] = (packed & 0x0f).astype(np.float32) - 8
+                q[1::2] = (packed >> 4).astype(np.float32) - 8
+            arr = q.reshape(rows, cols) * scales[:, None]
+            arr = arr.reshape(-1)
+        else:
+            arr = np.frombuffer(raw, dtype=np.float16, count=n,
+                                offset=offset).astype(np.float32)
+            offset += n * 2
         key = t["name"]
         if key in name_map:
             sd_key = name_map[key]
@@ -419,13 +464,18 @@ def eval_shipped(bin_name: str = "url-model.bin"):
 @app.function(image=image, volumes={VOL: vol}, timeout=1800, cpu=8,
               memory=16384)
 def export_model(cfg: dict, out_name: str):
-    """Export a trained checkpoint in hamr-url-model-v2 format -
-    identical to ../train-final.py export()."""
+    """Export a trained checkpoint. Plain models export in
+    hamr-url-model-v2 format (identical to ../train-final.py export()).
+    With cfg["quant"] = "int8" | "int4" the block matmul weights are
+    quantized per output channel (f16 scale per row, computed and
+    applied exactly as the neural.js v3 loader dequantizes) and the
+    format becomes hamr-url-model-v3."""
     import struct
 
     import numpy as np
     import torch
 
+    quant = cfg.get("quant")
     tok = make_tokenizer(cfg["tokenizer"])
     model = build_model(cfg, tok.size)
     model.load_state_dict(torch.load(
@@ -437,18 +487,41 @@ def export_model(cfg: dict, out_name: str):
         a = t.detach().numpy().astype(np.float16)
         tensors.append({"name": name, "shape": list(a.shape)})
         blobs.append(a.tobytes())
+
+    def add_q(name, t):
+        if not quant:
+            return add(name, t)
+        w = t.detach().numpy().astype(np.float32)
+        qmax = {"int8": 127, "int4": 7}[quant]
+        qmin = {"int8": -127, "int4": -8}[quant]
+        # f16 scales, so quantization here and dequantization in the
+        # JS loader use the exact same numbers
+        scales = (np.abs(w).max(axis=1) / qmax).clip(min=1e-6) \
+            .astype(np.float16)
+        q = np.round(w / scales.astype(np.float32)[:, None]) \
+            .clip(qmin, qmax).astype(np.int8)
+        if quant == "int4":
+            u = (q.astype(np.int16) + 8).astype(np.uint8).reshape(-1)
+            packed = (u[0::2] | (u[1::2] << 4)).astype(np.uint8)
+            payload = packed.tobytes()
+        else:
+            payload = q.tobytes()
+        tensors.append({"name": name, "shape": list(w.shape),
+                        "dtype": quant})
+        blobs.append(scales.tobytes() + payload)
+
     add("embed", model.embed.weight)
     add("pos", model.pos.weight)
     for i, b in enumerate(model.blocks):
         add(f"b{i}.norm1", b.norm1.g)
-        add(f"b{i}.qkv", b.qkv.weight)
-        add(f"b{i}.proj", b.proj.weight)
+        add_q(f"b{i}.qkv", b.qkv.weight)
+        add_q(f"b{i}.proj", b.proj.weight)
         add(f"b{i}.norm2", b.norm2.g)
-        add(f"b{i}.up", b.up.weight)
-        add(f"b{i}.down", b.down.weight)
+        add_q(f"b{i}.up", b.up.weight)
+        add_q(f"b{i}.down", b.down.weight)
     add("norm", model.norm.g)
     header = {
-        "format": "hamr-url-model-v2",
+        "format": "hamr-url-model-v3" if quant else "hamr-url-model-v2",
         "vocab": tok.size, "dim": cfg["dim"], "layers": cfg["layers"],
         "heads": cfg["heads"], "mlpDim": cfg["mlp"], "maxLen": cfg["ctx"],
         "linkVersion": cfg["link_version"],

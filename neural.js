@@ -153,7 +153,8 @@ export class URLModel {
     const header = JSON.parse(
       new TextDecoder().decode(new Uint8Array(buffer, 4, headerLength)));
     if (header.format !== "hamr-url-model-v1" &&
-        header.format !== "hamr-url-model-v2") {
+        header.format !== "hamr-url-model-v2" &&
+        header.format !== "hamr-url-model-v3") {
       throw `Unknown model format: "${header.format}"`;
     }
     /*
@@ -188,16 +189,57 @@ export class URLModel {
      */
     this.linkVersion = header.linkVersion || 1;
 
+    /*
+     * Tensor data. v1/v2 tensors are float16. v3 tensors may instead
+     * be int8 or int4 with one float16 scale per output channel (per
+     * row): the blob is the scale array followed by row-major signed
+     * integer values (int4 packs two per byte, low nibble first,
+     * stored as value + 8). Everything is dequantized to f64 right
+     * here at load - integer times correctly-rounded f16 scale is one
+     * exact f64 multiply - so inference math and its determinism are
+     * identical for every format version.
+     */
     this.tensors = {};
     let offset = 4 + headerLength;
-    for (const { name, shape } of header.tensors) {
+    for (const { name, shape, dtype } of header.tensors) {
       const count = shape.reduce((a, b) => a * b, 1);
       const data = new Float64Array(count);
-      for (let i = 0; i < count; i ++) {
-        data[i] = halfToDouble(view.getUint16(offset + i * 2, true));
+      if (dtype === "int8" || dtype === "int4") {
+        const rows = shape[0];
+        const cols = count / rows;
+        const scales = new Float64Array(rows);
+        for (let r = 0; r < rows; r ++) {
+          scales[r] = halfToDouble(view.getUint16(offset + r * 2, true));
+        }
+        offset += rows * 2;
+        if (dtype === "int8") {
+          for (let r = 0; r < rows; r ++) {
+            const scale = scales[r];
+            for (let c = 0; c < cols; c ++) {
+              data[r * cols + c] =
+                view.getInt8(offset + r * cols + c) * scale;
+            }
+          }
+          offset += count;
+        } else {
+          const rowBytes = cols / 2; // exporter guarantees even cols
+          for (let r = 0; r < rows; r ++) {
+            const scale = scales[r];
+            for (let b = 0; b < rowBytes; b ++) {
+              const byte = view.getUint8(offset + r * rowBytes + b);
+              data[r * cols + 2 * b] = ((byte & 0x0f) - 8) * scale;
+              data[r * cols + 2 * b + 1] = ((byte >> 4) - 8) * scale;
+            }
+          }
+          offset += count / 2;
+        }
+      } else {
+        for (let i = 0; i < count; i ++) {
+          data[i] = halfToDouble(view.getUint16(offset + i * 2, true));
+        }
+        offset += count * 2;
       }
       this.tensors[name] = data;
-      offset += count * 2;
     }
   }
 
