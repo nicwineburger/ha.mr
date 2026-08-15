@@ -1,14 +1,16 @@
 /**
- * @file JS glue for the WebAssembly inference engine prototype.
+ * @file JS glue for the production WebAssembly inference engine.
  *
  * Pairs engine.wasm (built from engine.c, recipe in wasm/README.md)
- * with a faithful port of the neural.js encode/decode pipeline. The
- * shipped neural.js is untouched: this module re-uses its model
- * loader (URLModel - dequantization, tokenizer, payload versioning)
- * and the shared arithmetic coder, and swaps ONLY the inference
- * engine underneath. Every payload produced or consumed here must be
- * bit-identical to neural.js - that is the acceptance criterion, not
- * a hope (see wasm/wasm.test.mjs and wasm/verify.mjs).
+ * with a faithful port of the neural.js encode/decode pipeline.
+ * neural.js is untouched and remains the reference implementation and
+ * automatic fallback (see engine-select.js at the repo root, which
+ * every production entry point goes through): this module re-uses its
+ * model loader (URLModel - dequantization, tokenizer, payload
+ * versioning) and the shared arithmetic coder, and swaps ONLY the
+ * inference engine underneath. Every payload produced or consumed
+ * here must be bit-identical to neural.js - that is the acceptance
+ * criterion, not a hope (see wasm/wasm.test.mjs and wasm/verify.mjs).
  *
  * Memory model: the WASM module owns its linear memory. At load, the
  * dequantized f32 tensors are copied in once. Above the weights lives

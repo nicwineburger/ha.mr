@@ -26,9 +26,15 @@ import {
  * @param {URLModel?} model Loaded model, or null for classic-only
  * @param {{search?: boolean}} [options] Neural encoder options
  *  (see neuralCompressToNumber); omitted = full tokenization search
+ * @param {{compress: (input: string, options?: object) => BigInt?}}
+ *  [engine] Inference engine bound to `model` (see
+ *  engine-select.js's selectEngine) - omitted defaults to the plain
+ *  JS engine via neuralCompressToNumber, unchanged from before this
+ *  parameter existed. Callers pass this to run the neural half of the
+ *  hybrid scheme through WASM; payloads are bit-identical either way.
  * @returns {string} Output payload (not a full link!)
  */
-export function compressHybrid (input, alphabet, model, options) {
+export function compressHybrid (input, alphabet, model, options, engine = null) {
   // Either scheme may fail where the other succeeds (e.g. the classic
   // domain dictionary can't encode hostnames containing "_", which
   // are invalid DNS but do occur in the wild) - only fail if both do.
@@ -41,7 +47,9 @@ export function compressHybrid (input, alphabet, model, options) {
   }
   if (model) {
     try {
-      const neural = neuralCompressToNumber(model, input, options);
+      const neural = engine
+        ? engine.compress(input, options)
+        : neuralCompressToNumber(model, input, options);
       // Smaller payload number = same or fewer output symbols
       if (neural !== null && (best === null || neural < best)) best = neural;
     } catch (e) {
@@ -57,9 +65,14 @@ export function compressHybrid (input, alphabet, model, options) {
  * @param {string} payload Compressed payload
  * @param {string[]} alphabet Ordered alphabet used by payload
  * @param {URLModel?} model Loaded model, or null for classic-only
+ * @param {{decompress: (number: BigInt) => string}} [engine] Inference
+ *  engine bound to `model` (see engine-select.js's selectEngine) -
+ *  omitted defaults to the plain JS engine via
+ *  neuralDecompressNumber, unchanged from before this parameter
+ *  existed.
  * @returns {string} Full link containing payload contents.
  */
-export function decompressHybrid (payload, alphabet, model) {
+export function decompressHybrid (payload, alphabet, model, engine = null) {
   const number = stringToNumber(payload, alphabet);
   const version = payloadVersion(number);
   if (version === 0) return decompressNumber(number);
@@ -69,7 +82,7 @@ export function decompressHybrid (payload, alphabet, model) {
   if (!model) {
     throw `This link requires model version ${version} to decode.`;
   }
-  return neuralDecompressNumber(model, number);
+  return engine ? engine.decompress(number) : neuralDecompressNumber(model, number);
 }
 
 /**

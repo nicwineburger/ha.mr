@@ -1,22 +1,43 @@
 import { compressHybrid, decompressHybrid, payloadSchemeVersion } from "./hybrid.js";
 import { cleanLink } from "./clean.js";
 import { URLModel } from "./neural.js";
+import { selectEngine, wasmModuleSource } from "./engine-select.js";
 import {
   outputAlphabetASCII,
   outputAlphabetQR,
   outputAlphabetEmoji
 } from "./alphabets.js";
 
+/*
+ * engine.wasm is fetched here, at module top level, so it downloads in
+ * PARALLEL with the model fetch below instead of after it - both are
+ * on the critical path to the first neural render. wasmModuleSource
+ * memoizes the compiled module, so every later selectEngine() call
+ * (the initial model, and any lazy-loaded archived model below) reuses
+ * it without a second fetch or compile.
+ */
+const wasmSource = wasmModuleSource(fetch("/wasm/engine.wasm").then(r => {
+  if (!r.ok) throw `HTTP ${r.status}`;
+  return r;
+}));
+
 /**
  * The neural model loads in the background. Until it's ready (or if
- * the file is missing), everything runs on the classic scheme.
+ * the file is missing), everything runs on the classic scheme. Once
+ * it's ready, an inference engine is selected for it - WASM if the
+ * browser supports it, the plain JS engine otherwise (automatic,
+ * silent fallback; see engine-select.js). `engine` stays in lockstep
+ * with `model`: both are set together, so a caller reading `model` and
+ * `engine` at the same time never sees a mismatched pair.
  */
 let model = null;
+let engine = null;
 const modelReady = (async () => {
   try {
     const response = await fetch("/model/url-model.bin");
     if (!response.ok) throw `HTTP ${response.status}`;
     model = new URLModel(await response.arrayBuffer());
+    engine = await selectEngine(model, wasmSource);
     // Upgrade whatever is currently displayed
     updateOutput();
   } catch (e) {
@@ -114,8 +135,12 @@ function updateOutput () {
  */
 const searchCache = { input: null, results: new Map() };
 function hybridPayload (input, alphabet, activeModel, neuralOptions) {
+  // `engine` (module-level) is always set together with `model`, and
+  // `activeModel` is either null or that same `model` reference, so
+  // it's always the matching engine for whichever model is active.
+  const activeEngine = activeModel ? engine : null;
   if (!activeModel || !neuralOptions || !neuralOptions.search) {
-    return compressHybrid(input, alphabet, activeModel, neuralOptions);
+    return compressHybrid(input, alphabet, activeModel, neuralOptions, activeEngine);
   }
   if (searchCache.input !== input) {
     searchCache.input = input;
@@ -123,7 +148,7 @@ function hybridPayload (input, alphabet, activeModel, neuralOptions) {
   }
   if (!searchCache.results.has(alphabet)) {
     searchCache.results.set(alphabet,
-      compressHybrid(input, alphabet, activeModel, neuralOptions));
+      compressHybrid(input, alphabet, activeModel, neuralOptions, activeEngine));
   }
   return searchCache.results.get(alphabet);
 }
@@ -251,19 +276,26 @@ inputLinkElement.addEventListener("input", updateOutput);
       // Classic payloads redirect immediately; neural ones need the
       // model matching their payload version. The latest model is
       // already being fetched; links made by older models lazy-load
-      // their archived model file instead.
+      // their archived model file instead. Either way, decoding goes
+      // through the same selected engine as encoding: engine.c
+      // implements both the v1/v2 scalar kernel and the v3+
+      // 4-way-unrolled one, so an archived model gets the WASM engine
+      // too when it's available - only the kernel it runs differs.
       let decodeModel = null;
+      let decodeEngine = null;
       const version = payloadSchemeVersion(payload, alphabet);
       if (version >= 1) {
         await modelReady;
         decodeModel = model;
+        decodeEngine = engine;
         if (!decodeModel || decodeModel.linkVersion !== version) {
           const response = await fetch(`/model/url-model-v${version}.bin`);
           if (!response.ok) throw `HTTP ${response.status} fetching model version ${version}`;
           decodeModel = new URLModel(await response.arrayBuffer());
+          decodeEngine = await selectEngine(decodeModel, wasmSource);
         }
       }
-      const target = decompressHybrid(payload, alphabet, decodeModel);
+      const target = decompressHybrid(payload, alphabet, decodeModel, decodeEngine);
       window.location.href = target;
       return;
     } catch (e) {

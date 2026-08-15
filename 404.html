@@ -129,6 +129,10 @@
     }
   </style>
   <script src="/qrcode.js"></script>
+  <!-- Starts downloading before main.js (a deferred module script)
+       even runs, so it's ready in parallel with the model fetch on
+       the critical path to the first neural render. -->
+  <link rel="preload" href="/wasm/engine.wasm" as="fetch" crossorigin>
 </head>
 <body>
 

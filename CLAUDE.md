@@ -25,23 +25,53 @@ decoded by `404.html`). Deployed on GitHub Pages from the repo root.
   `standalone.js` (`hamr`). Version 3 payloads also chunk-code URLs
   longer than the context window (in-band EOS restarts the context),
   so the neural path covers arbitrarily long URLs.
+- **Inference engine**: `engine-select.js` picks the WASM engine
+  (`wasm/engine.wasm`, ~3x faster) when the runtime can load it,
+  falling back automatically and silently to the plain-JS engine
+  (`neural.js`) otherwise — every production entry point (`main.js`,
+  `standalone.js`, the 404 decode path) goes through it. Payloads are
+  bit-identical either way (see invariant 1 and `wasm/README.md`);
+  this only ever changes speed, never a link's contents.
 
 ## Critical invariants — breaking these breaks issued links
 
 1. **Determinism.** The arithmetic coder requires bit-identical
-   probabilities on every browser/CPU. `neural.js` therefore uses ONLY
-   IEEE correctly-rounded operations (`+ - * / sqrt`) plus its own
-   `detExp`/`detLog2`; tokenization is exact string matching. NEVER
-   introduce `Math.exp/pow/sin/tanh`, WebGPU/WASM inference, or float
-   accumulation-order changes for an EXISTING model version — each
-   version's kernel summation order is frozen the moment links are
-   issued (v1/v2: sequential `matmul`; v3+: 4-way-unrolled `matmul4`;
-   a future version may pick a new fixed order, gated on its format,
-   but can never change an old one). Model architecture is
-   constrained to what this supports: ReLU MLP, RMSNorm, learned
-   absolute positions (no GELU/SiLU, no RoPE). Quantized (v3) weights
-   are dequantized to floats at load — int times f16 scale is exact —
-   so quantization never touches inference determinism.
+   probabilities on every browser/CPU/engine. `neural.js` therefore
+   uses ONLY IEEE correctly-rounded operations (`+ - * / sqrt`) plus
+   its own `detExp`/`detLog2`; tokenization is exact string matching.
+   NEVER introduce `Math.exp/pow/sin/tanh` or float accumulation-order
+   changes for an EXISTING model version — each version's kernel
+   summation order is frozen the moment links are issued (v1/v2:
+   sequential `matmul`; v3+: 4-way-unrolled `matmul4`; a future
+   version may pick a new fixed order, gated on its format, but can
+   never change an old one). Model architecture is constrained to
+   what this supports: ReLU MLP, RMSNorm, learned absolute positions
+   (no GELU/SiLU, no RoPE). Quantized (v3) weights are dequantized to
+   floats at load — int times f16 scale is exact — so quantization
+   never touches inference determinism.
+
+   **What's frozen is the bit-identical PROBABILITIES, not the choice
+   of engine that computes them.** A second inference engine (the
+   production WASM engine, `wasm/engine.c` + `wasm/engine.js`, is one)
+   is permitted ONLY as a faithful op-for-op transcription of
+   `neural.js` — same operations, same order, no libm, no
+   `-ffast-math`, no reassociation, no FMA — verified byte-identical
+   against `neural.js` on every pinned vector in `test/neural.test.mjs`
+   in BOTH Node and headless Chromium (the `wasm/` acceptance sweep:
+   `wasm/wasm.test.mjs` in `npm test`, `wasm/verify.mjs` +
+   `wasm/verify-browser.mjs` as the full sweep required before any
+   `engine.wasm` rebuild is committed — see `wasm/README.md`).
+   `neural.js` remains the reference implementation forever: every
+   acceptance check treats it as ground truth, and every production
+   entry point (`main.js`, `standalone.js`, the 404 decode path)
+   selects the second engine through `engine-select.js`, which falls
+   back to `neural.js` automatically and silently on any failure to
+   load or instantiate it. Plain SIMD128 is permitted in a faithful
+   transcription (it's per-lane IEEE-exact); relaxed-SIMD instructions
+   remain forbidden (non-deterministic by design), as do FMA and any
+   other reassociating or approximate math. WebGPU remains forbidden
+   outright — its floating-point reduction order isn't controllable,
+   so no transcription of it could meet the byte-identical bar.
 2. **Model files are compatibility surfaces.** Never overwrite
    `model/url-model.bin` in place. Upgrades: train with the next
    `link_version`, archive the current file as `url-model-v<N>.bin`,
@@ -67,10 +97,14 @@ decoded by `404.html`). Deployed on GitHub Pages from the repo root.
 
 ## Commands
 
-- `npm test` — full suite (76 tests): round-trips, normalizations,
+- `npm test` — full suite (91 tests): round-trips, normalizations,
   pinned vectors per version, version routing, quantized-loader
-  checks, chunked coding, CLI. CI also diffs `index.html`/`404.html`.
-  The v3 model makes the suite take a few minutes of CPU.
+  checks, chunked coding, CLI, WASM/JS engine bit-identity and
+  selection (including a Playwright check of the real page, which
+  skips itself when no headless Chromium is available rather than
+  failing). CI also diffs `index.html`/`404.html`. The v3 model and
+  the WASM acceptance checks make the suite take about 8 minutes of
+  CPU.
 - `node model/benchmark.mjs <urls-file> [limit]` — real-coder
   benchmark vs classic, verifies every round-trip.
 - CPU experiments: `model/harness/` (see its README; config-driven,
