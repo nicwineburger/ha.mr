@@ -443,12 +443,15 @@ def eval_shipped(bin_name: str = "url-model.bin"):
         n = int(np.prod(t["shape"]))
         dtype = t.get("dtype", "f16")
         if dtype in ("int8", "int4"):
-            # v3: per-row f16 scales, then row-major int values
+            # v3: f16 scales (one per row, or per `group` columns),
+            # then row-major int values
             rows = t["shape"][0]
             cols = n // rows
-            scales = np.frombuffer(raw, dtype=np.float16, count=rows,
+            group = t.get("group", 0)
+            n_scales = rows * (cols // group) if group else rows
+            scales = np.frombuffer(raw, dtype=np.float16, count=n_scales,
                                    offset=offset).astype(np.float32)
-            offset += rows * 2
+            offset += n_scales * 2
             if dtype == "int8":
                 q = np.frombuffer(raw, dtype=np.int8, count=n,
                                   offset=offset).astype(np.float32)
@@ -460,7 +463,11 @@ def eval_shipped(bin_name: str = "url-model.bin"):
                 q = np.empty(n, dtype=np.float32)
                 q[0::2] = (packed & 0x0f).astype(np.float32) - 8
                 q[1::2] = (packed >> 4).astype(np.float32) - 8
-            arr = q.reshape(rows, cols) * scales[:, None]
+            if group:
+                arr = (q.reshape(rows, cols // group, group)
+                       * scales.reshape(rows, cols // group)[:, :, None])
+            else:
+                arr = q.reshape(rows, cols) * scales[:, None]
             arr = arr.reshape(-1)
         else:
             arr = np.frombuffer(raw, dtype=np.float16, count=n,
@@ -586,7 +593,7 @@ def main(action: str = "train", config: str = ""):
         for r in train_gpu.map(json.loads(config)):
             print("done:", r["name"], r["bits_per_char"])
     elif action == "eval-shipped":
-        eval_shipped.remote()
+        eval_shipped.remote(config or "url-model.bin")
     elif action == "export":
         cfg = json.loads(config)
         export_model.remote(cfg, cfg.get("out", "url-model-next.bin"))
