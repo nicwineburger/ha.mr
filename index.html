@@ -101,6 +101,12 @@
       color: gray;
       user-select: none;
     }
+    #clean-note {
+      display: none;
+      font-size: 0.75em;
+      color: gray;
+      word-break: break-all;
+    }
     #qrcode {
       display: none;
     }
@@ -149,6 +155,7 @@
     <p id="output-link-container">
       <a id="output-link" target="_blank">Enter a link above to compress</a>
       <br><span id="output-ratio">&nbsp;</span>
+      <span id="clean-note"></span>
     </p>
 
     <img width="256" height="256" id="qrcode" alt="QR code for the compressed link">
@@ -166,6 +173,10 @@
     <span>
       <input type="checkbox" id="settings-qr" name="settings-qr" autocomplete="off">
       <label for="settings-qr"> Output QR code</label><br>
+    </span>
+    <span>
+      <input type="checkbox" id="settings-clean" name="settings-clean" autocomplete="off">
+      <label for="settings-clean"> Strip tracking parameters (changes the link)</label><br>
     </span>
     <br><br>
 

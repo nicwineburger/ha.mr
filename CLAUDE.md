@@ -58,7 +58,7 @@ decoded by `404.html`). Deployed on GitHub Pages from the repo root.
 
 ## Commands
 
-- `npm test` — full suite (41 tests): round-trips, normalizations,
+- `npm test` — full suite (70 tests): round-trips, normalizations,
   pinned vectors per version, version routing, CLI. CI also diffs
   `index.html`/`404.html`.
 - `node model/benchmark.mjs <urls-file> [limit]` — real-coder
@@ -87,6 +87,14 @@ Full results: `model/harness/README.md` (CPU campaign) and
   the student's budget.
 - Estimated entropy floor of the URL distribution: ~1.2–1.4
   bits/char; practical ceiling for this envelope ≈ −55%.
+- **Transform-unwrapping is a dead end with this model**
+  (`model/harness/transforms/REPORT.md`): only 2.13% of URLs carry
+  decodable substructure, ~96% of detections lose after tree
+  overhead, and the model already codes percent/base64 spans as seen
+  in training (unwrapped JSON costs MORE). Corpus gain +0.23% vs
+  +0.27% for plain chunked coding of long URLs — chunking is the
+  follow-up worth shipping (in a future payload version); transforms
+  only merit revisiting if a model is trained on unwrapped text.
 
 ## Open follow-ups (each ships as a new payload version, breaking nothing)
 
