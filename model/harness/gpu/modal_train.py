@@ -279,6 +279,18 @@ def _run_training(cfg):
         print(f"teacher {tcfg['name']} loaded (step {ck['step']})", flush=True)
 
     model = build_model(cfg, tok.size).to(device)
+    if cfg.get("init_from"):
+        # Warm-start (e.g. QAT fine-tuning from a trained checkpoint).
+        # Prefer the live checkpoint's unrounded weights; fall back to
+        # the f16-rounded eval checkpoint.
+        live = os.path.join(VOL, f"ckpt-live-{cfg['init_from']}.pt")
+        if os.path.exists(live):
+            model.load_state_dict(torch.load(live, map_location=device)["model"])
+        else:
+            model.load_state_dict(torch.load(
+                os.path.join(VOL, f"ckpt-{cfg['init_from']}.pt"),
+                map_location=device))
+        print(f"initialized from {cfg['init_from']}", flush=True)
     n_params = sum(p.numel() for p in model.parameters())
     ctx, batch = cfg["ctx"], cfg.get("batch", 512)
     lr_max = cfg.get("lr", 8e-3)
