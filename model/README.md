@@ -5,21 +5,42 @@ link compression (see `neural.js` in the repository root). It predicts
 each token of a URL; an arithmetic coder converts those predictions
 into near-optimal bits.
 
-Current shipped model (payload version 2): trained on GPU for 3B
-tokens over a 19.8M-URL corpus sampled from the Common Crawl index —
-see [`harness/gpu/RESULTS.md`](harness/gpu/RESULTS.md). On 1,000
-held-out URLs, hybrid payloads average **51.8% smaller than the
-classic scheme alone**. `url-model-v1.bin` is the archived first
-model, kept deployed so version-1 links stay decodable.
+Current shipped model (payload version 3): a 21.6M-parameter student
+distilled from a 71.7M teacher on GPU (3B tokens over a 19.8M-URL
+Common Crawl corpus), quantized to int4 with per-group scales —
+12.3MB download. On held-out URLs, hybrid payloads average about
+**58% smaller than the classic scheme alone** (exact figures in the
+version-3 results on the PR/branch). Beyond-context URLs are coded
+in chunks (see below), so long links no longer fall back to classic.
+`url-model-v1.bin` and `url-model-v2.bin` are the archived earlier
+models, kept deployed so old links stay decodable.
 
-## Format (hamr-url-model-v2)
+## Format (hamr-url-model-v2 / -v3)
 
 Little-endian binary: a `uint32` header length, a JSON header (model
-dimensions, token manifest, tensor manifest), then float16 tensor data
-in manifest order. Loaded and evaluated by `neural.js` in plain
-JavaScript — no runtime dependencies, no WebGPU/WASM, and only IEEE
-correctly-rounded operations so that encoding and decoding are
-bit-identical on every browser and platform.
+dimensions, token manifest, tensor manifest), then tensor data in
+manifest order. v2 tensors are float16. v3 tensors may additionally
+be quantized: `dtype: "int8"` or `"int4"` with one float16 scale per
+output row, or per `group` input columns when the manifest entry
+sets a group size (int4 packs two values per byte, low nibble first,
+stored as value + 8). The loader dequantizes to floats at load —
+integer times correctly-rounded f16 scale is exact — so inference
+math is identical for every format. Loaded and evaluated by
+`neural.js` in plain JavaScript — no runtime dependencies, no
+WebGPU/WASM, and only IEEE correctly-rounded operations so that
+encoding and decoding are bit-identical on every browser and
+platform. v3 files evaluate with a 4-way-unrolled matmul kernel
+(fixed summation order, still deterministic); v1/v2 files keep the
+original kernel forever, because their issued payloads pin its exact
+arithmetic.
+
+Payload version 3 also introduces **chunked coding**: a URL longer
+than the model context is tokenized once, split into
+capacity-sized chunks, and coded as one arithmetic stream in which
+each in-band EOS restarts the model context. Framing is
+self-describing (a full-capacity chunk's EOS means another chunk
+follows; a shorter chunk ends the URL), so arbitrarily long URLs
+stay on the neural path at a few bits per extra chunk.
 
 Tokenization is greedy longest-match over the header's `tokens` list
 (EOS = 0, ids follow list order from 1). The vocabulary was learned by
@@ -41,20 +62,24 @@ pinned payload bits stay put.
 ## Architecture
 
 - 1024-token vocabulary (~2.1 characters/token on URLs)
-- 5 transformer layers, 192 hidden dim, 6 heads, 576 MLP dim
-- Learned absolute position embeddings, 96-token context (~200 chars)
+- 8 transformer layers, 512 hidden dim, 16 heads, 1536 MLP dim
+- Learned absolute position embeddings, 96-token context (~200 chars
+  per chunk; longer URLs are chunk-coded)
 - RMSNorm, ReLU MLP, output head tied to the embedding table
-- ~2.06M parameters ≈ 4.1MB as float16
+- ~21.6M parameters; int4 weights with per-64-column f16 scales
+  (embeddings, positions, and norms stay f16) ≈ 12.3MB
 
 The architecture is restricted to operations that are deterministic in
 JavaScript (`+ - * / sqrt`): no GELU/SiLU (needs `exp`/`tanh`), no
 rotary embeddings (needs `sin`/`cos`). Softmax uses a deterministic
 `exp` built from basic operations.
 
-This configuration won a controlled screening campaign over
-tokenizers, vocab sizes, and model scales — see
-[`harness/README.md`](harness/README.md) for the methodology and full
-results table.
+The 2M-parameter architecture of versions 1-2 won the original
+screening campaign ([`harness/README.md`](harness/README.md)); the
+version-3 model was distilled from a 71.7M-parameter teacher (KD is
+decisive at this capacity, unlike at 2M where it tied) and
+QAT-quantized - int8 beats int4 by ~1.6 est. symbols but doubles the
+download, so int4-group64 shipped as the size/quality compromise.
 
 ## Training data
 
@@ -67,9 +92,10 @@ popular-site URLs upweighted 3x. Train/val/holdout membership is
 hashed from the URL string, so splits are stable and leak-free across
 corpus rebuilds and corpus growth.
 
-Distillation from a 71.7M-parameter teacher was evaluated and tied
-direct training at this model size (the student's capacity is the
-binding constraint) - the shipped model is the directly-trained one.
+Distillation from the 71.7M-parameter teacher (archived under
+`harness/gpu/teacher/`) tied direct training at 2M parameters but is
+decisive at 21.6M (2.144 vs 2.235 bits/char at the 500M-token
+screening budget) - the shipped version-3 model is the distilled one.
 Details in [`harness/gpu/RESULTS.md`](harness/gpu/RESULTS.md).
 
 ## Reproducing

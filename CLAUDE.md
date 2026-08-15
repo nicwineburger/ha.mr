@@ -19,20 +19,29 @@ decoded by `404.html`). Deployed on GitHub Pages from the repo root.
   version 0 = classic, version N>=1 = the model whose `linkVersion`
   is N.
 - **Models** live in `model/`: `url-model.bin` is the latest
-  (currently linkVersion 2, 2.06M params, 4.1MB f16);
-  `url-model-v1.bin` is archived and lazy-loaded only when a
-  version-1 link is opened. CLI: `standalone.js` (`hamr`).
+  (currently linkVersion 3, 21.6M params, int4 weights with per-group
+  f16 scales, 12.3MB); `url-model-v1.bin` and `url-model-v2.bin` are
+  archived and lazy-loaded only when an old link is opened. CLI:
+  `standalone.js` (`hamr`). Version 3 payloads also chunk-code URLs
+  longer than the context window (in-band EOS restarts the context),
+  so the neural path covers arbitrarily long URLs.
 
 ## Critical invariants — breaking these breaks issued links
 
 1. **Determinism.** The arithmetic coder requires bit-identical
    probabilities on every browser/CPU. `neural.js` therefore uses ONLY
    IEEE correctly-rounded operations (`+ - * / sqrt`) plus its own
-   `detExp`; tokenization is exact string matching. NEVER introduce
-   `Math.exp/pow/sin/tanh`, WebGPU/WASM inference, or float
-   accumulation-order changes. Model architecture is constrained to
-   what this supports: ReLU MLP, RMSNorm, learned absolute positions
-   (no GELU/SiLU, no RoPE).
+   `detExp`/`detLog2`; tokenization is exact string matching. NEVER
+   introduce `Math.exp/pow/sin/tanh`, WebGPU/WASM inference, or float
+   accumulation-order changes for an EXISTING model version — each
+   version's kernel summation order is frozen the moment links are
+   issued (v1/v2: sequential `matmul`; v3+: 4-way-unrolled `matmul4`;
+   a future version may pick a new fixed order, gated on its format,
+   but can never change an old one). Model architecture is
+   constrained to what this supports: ReLU MLP, RMSNorm, learned
+   absolute positions (no GELU/SiLU, no RoPE). Quantized (v3) weights
+   are dequantized to floats at load — int times f16 scale is exact —
+   so quantization never touches inference determinism.
 2. **Model files are compatibility surfaces.** Never overwrite
    `model/url-model.bin` in place. Upgrades: train with the next
    `link_version`, archive the current file as `url-model-v<N>.bin`,
@@ -78,15 +87,21 @@ Full results: `model/harness/README.md` (CPU campaign) and
 - v2 model: **−51.8% vs classic** on 1,000 held-out URLs (v1: −39.0%
   on the same set). Data at fixed size was the win: 16× corpus, 40×
   tokens on the same 2.06M architecture.
-- **~2M params is the size/speed knee** (holds at GPU scale); vocab
-  2048 ties 1024; greedy-1024 tokenization buys context coverage
-  (~200 chars), not bits/char.
-- **Distillation tied direct training** at this model size (71.7M
-  teacher at 1.5693 bits/char; student capacity is the binding
-  constraint at a 3B-token budget). Don't revisit without changing
-  the student's budget.
+- **~2M params is the size/speed knee for f16** (holds at GPU scale);
+  vocab 2048 ties 1024; greedy-1024 tokenization buys context
+  coverage (~200 chars), not bits/char. Quantization moved the knee:
+  the v3 model is 21.6M params at 12.3MB (int4, group-64 scales).
+- **Distillation tied direct training at 2M params** (student
+  capacity was the binding constraint) but is **decisive at 21.6M**
+  (2.144 vs 2.235 bits/char at the 500M screening budget) — the v3
+  model is distilled from the archived 71.7M teacher
+  (1.5693 bits/char, `model/harness/gpu/teacher/`).
+- **QAT quantization ladder at 21.6M** (shared eval bits/char):
+  fp16 1.721, int8 1.705 (22.2MB), int4 group-64 1.868 (12.3MB),
+  int4 per-channel 1.937 (11.7MB). int8 reaches −61% vs classic but
+  at 2× the download envelope; int4-g64 shipped.
 - Estimated entropy floor of the URL distribution: ~1.2–1.4
-  bits/char; practical ceiling for this envelope ≈ −55%.
+  bits/char; the 71.7M teacher (1.57) approaches it.
 - **Transform-unwrapping is a dead end with this model**
   (`model/harness/transforms/REPORT.md`): only 2.13% of URLs carry
   decodable substructure, ~96% of detections lose after tree

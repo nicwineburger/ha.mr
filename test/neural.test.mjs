@@ -58,23 +58,31 @@ test("arithmetic coder approaches the model's entropy", () => {
   assert.ok(bits.length < 60, `expected < 60 bits, got ${bits.length}`);
 });
 
-// The latest model (encodes payload version 2) and the archived v1
-// model (kept deployed so version-1 links stay decodable)
+// The latest model (encodes payload version 3) and the archived v1
+// and v2 models (kept deployed so old links stay decodable)
 const model = new URLModel(
   (await readFile(new URL("../model/url-model.bin", import.meta.url))).buffer);
 const modelV1 = new URLModel(
   (await readFile(new URL("../model/url-model-v1.bin", import.meta.url))).buffer);
+const modelV2 = new URLModel(
+  (await readFile(new URL("../model/url-model-v2.bin", import.meta.url))).buffer);
 
 test("model files parse with expected dimensions and versions", () => {
-  assert.equal(model.linkVersion, 2);
+  assert.equal(model.linkVersion, 3);
+  assert.equal(modelV2.linkVersion, 2);
   assert.equal(modelV1.linkVersion, 1);
-  for (const m of [model, modelV1]) {
+  for (const m of [model, modelV2, modelV1]) {
     assert.equal(m.vocab, 1024);
     assert.equal(m.maxLen, 96);
     assert.ok(m.tokens.length === 1023);
     assert.ok(m.dim >= 32);
     assert.ok(m.layers >= 1);
   }
+  // Only the v3 file (whose payloads were always coded with the
+  // unrolled kernel) selects it
+  assert.equal(model.fastKernels, true);
+  assert.equal(modelV2.fastKernels, false);
+  assert.equal(modelV1.fastKernels, false);
 });
 
 test("tokenizer round-trips URL text", () => {
@@ -127,10 +135,12 @@ test("neural coder round-trips URLs", () => {
 });
 
 test("neural coder refuses what it can't represent", () => {
-  // Too long for the model's ~200-char effective context window
+  // Too long for a single context window: pre-chunking (v2) models
+  // refuse; the current model codes it in chunks instead
   const long = "https://example.com/" +
     Array.from({ length: 120 }, (_, i) => `x${i % 10}z`).join("/");
-  assert.equal(neuralCompressToNumber(model, long), null);
+  assert.equal(neuralCompressToNumber(modelV2, long), null);
+  assert.notEqual(neuralCompressToNumber(model, long), null);
   // Non-http(s) schemes aren't representable in the payload format
   assert.equal(neuralCompressToNumber(model, "ftp://example.com/x"), null);
 });
@@ -269,7 +279,7 @@ test("pinned v1 payloads stay stable against the archived model", () => {
   ], modelV1);
 });
 
-test("pinned v2 payloads stay stable", () => {
+test("pinned v2 payloads stay stable against the archived model", () => {
   // The tokenization search ties greedy on these links, and ties
   // resolve to greedy, so these vectors survived the search's
   // introduction unchanged
@@ -278,6 +288,35 @@ test("pinned v2 payloads stay stable", () => {
     [pinnedLinks[1], "?r9)?8@", "PK3+O8RT"],
     [pinnedLinks[2], "?O+UoHb62N6/FK_rEoI~", "+N6PPKWG5+0OJES24PM6/$Q*"],
     [pinnedLinks[3], "Jo#z:yEW+jB$mrY[bxd2!", "1*AT7DJ/XR.8QGVXJHW$WST1"]
+  ], modelV2);
+});
+
+/*
+ * The beyond-context URL pins chunked coding (multiple context
+ * restarts in one arithmetic stream). All encode vectors below were
+ * generated with the tokenization search active - the default
+ * encode path.
+ */
+const longPinnedLink =
+  "https://data.example-archive.org/collections/2024/expedition-photos/"
+  + "region-north-atlantic/vessel-research-7/deck-camera-03/"
+  + "capture-2024-06-19T14-22-51Z-frame-000482-exposure-auto-wb-daylight.jpg"
+  + "?checksum=9f3a1c77d2e648b0&signature=vRt2LpQ8xYw4Nc6bJmH0aZsEuDkFgO51"
+  + "&expires=1718900000&session=b81f2ce4a90d47e3";
+
+test("pinned v3 payloads stay stable", () => {
+  checkVectors([
+    [pinnedLinks[0], "9rZ),qdR?A16&wGa8", "ZJ$RKSLGGB:QCXA:M6S4"],
+    [pinnedLinks[1], "uErEB2R'", "MG.K/DQ$6"],
+    [pinnedLinks[2], "aR$3Rt*a1vAXR6UrwS", "WHBV6Q994Z3NV624P-/.3$"],
+    [pinnedLinks[3], "epBzVKjP$aAM:D/zPUeoC_", "PW90503L5ODV:-33TQJEO89KSD"],
+    [longPinnedLink,
+      "NeQ8w0uNuLXjpf3qEWj$_p&]!Tr6[3d;rP;r75:XRI0J4NE*ljJk$zkKgP6.J$Aq0"
+      + "GGO6Z),3@.Ht4.)@7HhkS8PnCGMnR#~jlmNl[ktzRu/rHAo2nu(Oblm/c5on$e$X"
+      + "X@RP5,UY$y@Msjw]QiK)0mCPI,PI6iDNq~bd7",
+      "EE+NHOVURC0BOEGM6QF*9KF14E2$21XDGSH7VARG8MENHF25YW.HLA0HV3:IDF*2B"
+      + "6D7LJ3A70BRMRQS18TQBAC1L76U-CUXXU7KRG4WM+R050-T1-3YI1OSPI+TG.BCW"
+      + ":SW/SECV891KE.MSMZ9NDQ26IL:KP5LL/QZ6EN-O6N$H/7+HCD-UT00X1:+:+CUI2+*"]
   ], model);
 });
 
@@ -296,15 +335,15 @@ test("searched v2 payloads improve on superseded greedy payloads", () => {
   ];
   for (const [link, greedyAscii, greedyQr, ascii, qr] of cases) {
     // Superseded greedy payloads must decode forever
-    assert.equal(decompressHybrid(greedyAscii, outputAlphabetASCII, model), link);
-    assert.equal(decompressHybrid(greedyQr, outputAlphabetQR, model), link);
-    // Current encoder output, never larger than what greedy issued
-    assert.equal(compressHybrid(link, outputAlphabetASCII, model), ascii);
-    assert.equal(compressHybrid(link, outputAlphabetQR, model), qr);
+    assert.equal(decompressHybrid(greedyAscii, outputAlphabetASCII, modelV2), link);
+    assert.equal(decompressHybrid(greedyQr, outputAlphabetQR, modelV2), link);
+    // The archived v2 encoder's output, never larger than greedy's
+    assert.equal(compressHybrid(link, outputAlphabetASCII, modelV2), ascii);
+    assert.equal(compressHybrid(link, outputAlphabetQR, modelV2), qr);
     assert.ok(ascii.length <= greedyAscii.length, `ascii regression for ${link}`);
     assert.ok(qr.length <= greedyQr.length, `qr regression for ${link}`);
-    assert.equal(decompressHybrid(ascii, outputAlphabetASCII, model), link);
-    assert.equal(decompressHybrid(qr, outputAlphabetQR, model), link);
+    assert.equal(decompressHybrid(ascii, outputAlphabetASCII, modelV2), link);
+    assert.equal(decompressHybrid(qr, outputAlphabetQR, modelV2), link);
   }
 });
 
@@ -340,22 +379,22 @@ test("payload versions route to the matching model", async () => {
   // payloads carry that version and refuse to decode with any other
   // model. This is the upgrade path that keeps old links working.
   const raw = (await readFile(new URL("../model/url-model.bin", import.meta.url))).buffer;
-  const modelV3 = new URLModel(withLinkVersion(raw, 3));
-  assert.equal(modelV3.linkVersion, 3);
+  const modelNext = new URLModel(withLinkVersion(raw, 4));
+  assert.equal(modelNext.linkVersion, 4);
 
   const link = "https://www.example.com/versioned/path";
-  const payload = compressHybrid(link, outputAlphabetASCII, modelV3);
-  assert.equal(payloadSchemeVersion(payload, outputAlphabetASCII), 3);
-  assert.equal(decompressHybrid(payload, outputAlphabetASCII, modelV3), link);
+  const payload = compressHybrid(link, outputAlphabetASCII, modelNext);
+  assert.equal(payloadSchemeVersion(payload, outputAlphabetASCII), 4);
+  assert.equal(decompressHybrid(payload, outputAlphabetASCII, modelNext), link);
 
-  // The latest model must refuse a version-3 payload, and vice
+  // The latest model must refuse a version-4 payload, and vice
   // versa - silent cross-decoding would produce garbage URLs
   assert.throws(() => decompressHybrid(payload, outputAlphabetASCII, model),
     /version/);
   const payloadLatest = compressHybrid(link, outputAlphabetASCII, model);
   assert.equal(payloadSchemeVersion(payloadLatest, outputAlphabetASCII),
     model.linkVersion);
-  assert.throws(() => decompressHybrid(payloadLatest, outputAlphabetASCII, modelV3),
+  assert.throws(() => decompressHybrid(payloadLatest, outputAlphabetASCII, modelNext),
     /version/);
 });
 
