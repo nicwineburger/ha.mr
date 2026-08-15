@@ -65,6 +65,20 @@ test("CLI treats domain-prefixed hostnames as links, not payloads", () => {
   assert.equal(run(short), "https://ha.mrs.example/path");
 });
 
+test("CLI decodes links from archived model versions", async () => {
+  // Version-1 links must keep decoding after the latest model moved
+  // to version 2 - the CLI lazy-loads model/url-model-v1.bin
+  const { compressHybrid } = await import("../hybrid.js");
+  const { URLModel } = await import("../neural.js");
+  const { outputAlphabetASCII } = await import("../alphabets.js");
+  const { readFile } = await import("node:fs/promises");
+  const modelV1 = new URLModel(
+    (await readFile(new URL("../model/url-model-v1.bin", import.meta.url))).buffer);
+  const link = "https://www.example.com/archived/version";
+  const payload = compressHybrid(link, outputAlphabetASCII, modelV1);
+  assert.equal(run(`https://ha.mr#${payload}`), link);
+});
+
 test("CLI rejects unknown alphabets", () => {
   assert.throws(() => run("https://example.com", "bogus"));
 });
