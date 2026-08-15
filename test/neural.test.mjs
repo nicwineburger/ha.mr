@@ -58,23 +58,31 @@ test("arithmetic coder approaches the model's entropy", () => {
   assert.ok(bits.length < 60, `expected < 60 bits, got ${bits.length}`);
 });
 
-// The latest model (encodes payload version 2) and the archived v1
-// model (kept deployed so version-1 links stay decodable)
+// The latest model (encodes payload version 3) and the archived v1
+// and v2 models (kept deployed so old links stay decodable)
 const model = new URLModel(
   (await readFile(new URL("../model/url-model.bin", import.meta.url))).buffer);
 const modelV1 = new URLModel(
   (await readFile(new URL("../model/url-model-v1.bin", import.meta.url))).buffer);
+const modelV2 = new URLModel(
+  (await readFile(new URL("../model/url-model-v2.bin", import.meta.url))).buffer);
 
 test("model files parse with expected dimensions and versions", () => {
-  assert.equal(model.linkVersion, 2);
+  assert.equal(model.linkVersion, 3);
+  assert.equal(modelV2.linkVersion, 2);
   assert.equal(modelV1.linkVersion, 1);
-  for (const m of [model, modelV1]) {
+  for (const m of [model, modelV2, modelV1]) {
     assert.equal(m.vocab, 1024);
     assert.equal(m.maxLen, 96);
     assert.ok(m.tokens.length === 1023);
     assert.ok(m.dim >= 32);
     assert.ok(m.layers >= 1);
   }
+  // Only the v3 file (whose payloads were always coded with the
+  // unrolled kernel) selects it
+  assert.equal(model.fastKernels, true);
+  assert.equal(modelV2.fastKernels, false);
+  assert.equal(modelV1.fastKernels, false);
 });
 
 test("tokenizer round-trips URL text", () => {
@@ -127,10 +135,12 @@ test("neural coder round-trips URLs", () => {
 });
 
 test("neural coder refuses what it can't represent", () => {
-  // Too long for the model's ~200-char effective context window
+  // Too long for a single context window: pre-chunking (v2) models
+  // refuse; the current model codes it in chunks instead
   const long = "https://example.com/" +
     Array.from({ length: 120 }, (_, i) => `x${i % 10}z`).join("/");
-  assert.equal(neuralCompressToNumber(model, long), null);
+  assert.equal(neuralCompressToNumber(modelV2, long), null);
+  assert.notEqual(neuralCompressToNumber(model, long), null);
   // Non-http(s) schemes aren't representable in the payload format
   assert.equal(neuralCompressToNumber(model, "ftp://example.com/x"), null);
 });
@@ -269,7 +279,7 @@ test("pinned v1 payloads stay stable against the archived model", () => {
   ], modelV1);
 });
 
-test("pinned v2 payloads stay stable", () => {
+test("pinned v2 payloads stay stable against the archived model", () => {
   // The tokenization search ties greedy on these links, and ties
   // resolve to greedy, so these vectors survived the search's
   // introduction unchanged
@@ -278,6 +288,35 @@ test("pinned v2 payloads stay stable", () => {
     [pinnedLinks[1], "?r9)?8@", "PK3+O8RT"],
     [pinnedLinks[2], "?O+UoHb62N6/FK_rEoI~", "+N6PPKWG5+0OJES24PM6/$Q*"],
     [pinnedLinks[3], "Jo#z:yEW+jB$mrY[bxd2!", "1*AT7DJ/XR.8QGVXJHW$WST1"]
+  ], modelV2);
+});
+
+/*
+ * The beyond-context URL pins chunked coding (multiple context
+ * restarts in one arithmetic stream). All encode vectors below were
+ * generated with the tokenization search active - the default
+ * encode path.
+ */
+const longPinnedLink =
+  "https://data.example-archive.org/collections/2024/expedition-photos/"
+  + "region-north-atlantic/vessel-research-7/deck-camera-03/"
+  + "capture-2024-06-19T14-22-51Z-frame-000482-exposure-auto-wb-daylight.jpg"
+  + "?checksum=9f3a1c77d2e648b0&signature=vRt2LpQ8xYw4Nc6bJmH0aZsEuDkFgO51"
+  + "&expires=1718900000&session=b81f2ce4a90d47e3";
+
+test("pinned v3 payloads stay stable", () => {
+  checkVectors([
+    [pinnedLinks[0], "9rZ),qdR?A16&wGa8", "ZJ$RKSLGGB:QCXA:M6S4"],
+    [pinnedLinks[1], "uErEB2R'", "MG.K/DQ$6"],
+    [pinnedLinks[2], "aR$3Rt*a1vAXR6UrwS", "WHBV6Q994Z3NV624P-/.3$"],
+    [pinnedLinks[3], "epBzVKjP$aAM:D/zPUeoC_", "PW90503L5ODV:-33TQJEO89KSD"],
+    [longPinnedLink,
+      "NeQ8w0uNuLXjpf3qEWj$_p&]!Tr6[3d;rP;r75:XRI0J4NE*ljJk$zkKgP6.J$Aq0"
+      + "GGO6Z),3@.Ht4.)@7HhkS8PnCGMnR#~jlmNl[ktzRu/rHAo2nu(Oblm/c5on$e$X"
+      + "X@RP5,UY$y@Msjw]QiK)0mCPI,PI6iDNq~bd7",
+      "EE+NHOVURC0BOEGM6QF*9KF14E2$21XDGSH7VARG8MENHF25YW.HLA0HV3:IDF*2B"
+      + "6D7LJ3A70BRMRQS18TQBAC1L76U-CUXXU7KRG4WM+R050-T1-3YI1OSPI+TG.BCW"
+      + ":SW/SECV891KE.MSMZ9NDQ26IL:KP5LL/QZ6EN-O6N$H/7+HCD-UT00X1:+:+CUI2+*"]
   ], model);
 });
 
@@ -296,28 +335,34 @@ test("searched v2 payloads improve on superseded greedy payloads", () => {
   ];
   for (const [link, greedyAscii, greedyQr, ascii, qr] of cases) {
     // Superseded greedy payloads must decode forever
-    assert.equal(decompressHybrid(greedyAscii, outputAlphabetASCII, model), link);
-    assert.equal(decompressHybrid(greedyQr, outputAlphabetQR, model), link);
-    // Current encoder output, never larger than what greedy issued
-    assert.equal(compressHybrid(link, outputAlphabetASCII, model), ascii);
-    assert.equal(compressHybrid(link, outputAlphabetQR, model), qr);
+    assert.equal(decompressHybrid(greedyAscii, outputAlphabetASCII, modelV2), link);
+    assert.equal(decompressHybrid(greedyQr, outputAlphabetQR, modelV2), link);
+    // The archived v2 encoder's output, never larger than greedy's
+    assert.equal(compressHybrid(link, outputAlphabetASCII, modelV2), ascii);
+    assert.equal(compressHybrid(link, outputAlphabetQR, modelV2), qr);
     assert.ok(ascii.length <= greedyAscii.length, `ascii regression for ${link}`);
     assert.ok(qr.length <= greedyQr.length, `qr regression for ${link}`);
-    assert.equal(decompressHybrid(ascii, outputAlphabetASCII, model), link);
-    assert.equal(decompressHybrid(qr, outputAlphabetQR, model), link);
+    assert.equal(decompressHybrid(ascii, outputAlphabetASCII, modelV2), link);
+    assert.equal(decompressHybrid(qr, outputAlphabetQR, modelV2), link);
   }
 });
 
-test("v1 and v2 payloads refuse each other's models", () => {
+test("payloads of every version refuse every other version's model", () => {
   const link = "https://www.example.com/cross-version";
-  const p1 = compressHybrid(link, outputAlphabetASCII, modelV1);
-  const p2 = compressHybrid(link, outputAlphabetASCII, model);
-  assert.equal(payloadSchemeVersion(p1, outputAlphabetASCII), 1);
-  assert.equal(payloadSchemeVersion(p2, outputAlphabetASCII), 2);
-  assert.equal(decompressHybrid(p1, outputAlphabetASCII, modelV1), link);
-  assert.equal(decompressHybrid(p2, outputAlphabetASCII, model), link);
-  assert.throws(() => decompressHybrid(p1, outputAlphabetASCII, model), /version/);
-  assert.throws(() => decompressHybrid(p2, outputAlphabetASCII, modelV1), /version/);
+  const versions = [[1, modelV1], [2, modelV2], [3, model]];
+  const payloads = versions.map(([v, m]) => {
+    const p = compressHybrid(link, outputAlphabetASCII, m);
+    assert.equal(payloadSchemeVersion(p, outputAlphabetASCII), v);
+    assert.equal(decompressHybrid(p, outputAlphabetASCII, m), link);
+    return p;
+  });
+  for (const [i, [, m]] of versions.entries()) {
+    for (const [j, p] of payloads.entries()) {
+      if (i !== j) {
+        assert.throws(() => decompressHybrid(p, outputAlphabetASCII, m), /version/);
+      }
+    }
+  }
 });
 
 /** Rebuilds a model buffer with a different linkVersion in its header. */
@@ -340,22 +385,22 @@ test("payload versions route to the matching model", async () => {
   // payloads carry that version and refuse to decode with any other
   // model. This is the upgrade path that keeps old links working.
   const raw = (await readFile(new URL("../model/url-model.bin", import.meta.url))).buffer;
-  const modelV3 = new URLModel(withLinkVersion(raw, 3));
-  assert.equal(modelV3.linkVersion, 3);
+  const modelNext = new URLModel(withLinkVersion(raw, 4));
+  assert.equal(modelNext.linkVersion, 4);
 
   const link = "https://www.example.com/versioned/path";
-  const payload = compressHybrid(link, outputAlphabetASCII, modelV3);
-  assert.equal(payloadSchemeVersion(payload, outputAlphabetASCII), 3);
-  assert.equal(decompressHybrid(payload, outputAlphabetASCII, modelV3), link);
+  const payload = compressHybrid(link, outputAlphabetASCII, modelNext);
+  assert.equal(payloadSchemeVersion(payload, outputAlphabetASCII), 4);
+  assert.equal(decompressHybrid(payload, outputAlphabetASCII, modelNext), link);
 
-  // The latest model must refuse a version-3 payload, and vice
+  // The latest model must refuse a version-4 payload, and vice
   // versa - silent cross-decoding would produce garbage URLs
   assert.throws(() => decompressHybrid(payload, outputAlphabetASCII, model),
     /version/);
   const payloadLatest = compressHybrid(link, outputAlphabetASCII, model);
   assert.equal(payloadSchemeVersion(payloadLatest, outputAlphabetASCII),
     model.linkVersion);
-  assert.throws(() => decompressHybrid(payloadLatest, outputAlphabetASCII, modelV3),
+  assert.throws(() => decompressHybrid(payloadLatest, outputAlphabetASCII, modelNext),
     /version/);
 });
 
@@ -367,4 +412,191 @@ test("neural payloads require the model to decode", () => {
   assert.throws(() => decompressHybrid(payload, outputAlphabetASCII, null));
   assert.equal(new URL(decompressHybrid(payload, outputAlphabetASCII, model)).href,
     "https://www.example.com/x");
+});
+
+/*
+ * hamr-url-model-v3: quantized tensors (int8/int4 with per-row f16
+ * scales) dequantized at load, and the version-gated matmul4 kernel.
+ * These build a tiny synthetic v3 file in memory - real-model pinned
+ * vectors live above with the other versions.
+ */
+function buildTinyV3 () {
+  // f16 bit patterns for exactly-representable constants
+  const F16 = { "1": 0x3c00, "0.5": 0x3800, "0.25": 0x3400, "-0.5": 0xb800, "2": 0x4000 };
+  const dim = 4, mlp = 8, ctx = 6, vocabN = 5;
+  const qkvInts = Int8Array.from(
+    { length: 3 * dim * dim }, (_, i) => ((i * 37) % 255) - 127);
+  const projNibbles = Uint8Array.from(
+    { length: dim * dim }, (_, i) => (i * 7) % 16); // stored value+8
+  const upInts = Int8Array.from(
+    { length: mlp * dim }, (_, i) => ((i * 53) % 255) - 127);
+  const downNibbles = Uint8Array.from(
+    { length: dim * mlp }, (_, i) => (i * 11) % 16);
+
+  const tensors = [
+    { name: "embed", shape: [vocabN, dim] },
+    { name: "pos", shape: [ctx, dim] },
+    { name: "b0.norm1", shape: [dim] },
+    { name: "b0.qkv", shape: [3 * dim, dim], dtype: "int8" },
+    { name: "b0.proj", shape: [dim, dim], dtype: "int4" },
+    { name: "b0.norm2", shape: [dim] },
+    { name: "b0.up", shape: [mlp, dim], dtype: "int8" },
+    { name: "b0.down", shape: [dim, mlp], dtype: "int4" },
+    { name: "norm", shape: [dim] }
+  ];
+  const header = JSON.stringify({
+    format: "hamr-url-model-v3", vocab: vocabN, dim, layers: 1, heads: 2,
+    mlpDim: mlp, maxLen: ctx, linkVersion: 3, tokens: ["a", "b", "c", "d"],
+    tensors
+  });
+  const hb = new TextEncoder().encode(header);
+  const buf = new ArrayBuffer(4 + hb.length + 4096);
+  const view = new DataView(buf);
+  view.setUint32(0, hb.length, true);
+  new Uint8Array(buf, 4, hb.length).set(hb);
+  let o = 4 + hb.length;
+  const putF16 = (v) => { view.setUint16(o, F16[String(v)], true); o += 2; };
+  // embed + pos: alternating 1 / 0.5 / -0.5 / 0.25
+  const pattern = ["1", "0.5", "-0.5", "0.25"];
+  for (let i = 0; i < (vocabN + ctx) * dim; i ++) putF16(pattern[i % 4]);
+  for (let i = 0; i < dim; i ++) putF16("1");        // b0.norm1
+  for (let r = 0; r < 3 * dim; r ++) putF16("0.5");  // qkv scales
+  for (const q of qkvInts) { view.setInt8(o, q); o += 1; }
+  for (let r = 0; r < dim; r ++) putF16("0.25");     // proj scales
+  for (let b = 0; b < projNibbles.length; b += 2) {
+    view.setUint8(o, projNibbles[b] | (projNibbles[b + 1] << 4)); o += 1;
+  }
+  for (let i = 0; i < dim; i ++) putF16("1");        // b0.norm2
+  for (let r = 0; r < mlp; r ++) putF16("0.5");      // up scales
+  for (const q of upInts) { view.setInt8(o, q); o += 1; }
+  for (let r = 0; r < dim; r ++) putF16("2");        // down scales
+  for (let b = 0; b < downNibbles.length; b += 2) {
+    view.setUint8(o, downNibbles[b] | (downNibbles[b + 1] << 4)); o += 1;
+  }
+  for (let i = 0; i < dim; i ++) putF16("1");        // norm
+  return { buf, qkvInts, projNibbles, upInts, downNibbles };
+}
+
+test("v3 loader dequantizes int8 and int4 tensors exactly", () => {
+  const { buf, qkvInts, projNibbles, upInts, downNibbles } = buildTinyV3();
+  const m = new URLModel(buf);
+  assert.equal(m.linkVersion, 3);
+  assert.equal(m.fastKernels, true);
+  for (let i = 0; i < qkvInts.length; i ++) {
+    assert.equal(m.tensors["b0.qkv"][i], qkvInts[i] * 0.5, `qkv[${i}]`);
+  }
+  for (let i = 0; i < projNibbles.length; i ++) {
+    assert.equal(m.tensors["b0.proj"][i], (projNibbles[i] - 8) * 0.25,
+      `proj[${i}]`);
+  }
+  for (let i = 0; i < upInts.length; i ++) {
+    assert.equal(m.tensors["b0.up"][i], upInts[i] * 0.5, `up[${i}]`);
+  }
+  for (let i = 0; i < downNibbles.length; i ++) {
+    assert.equal(m.tensors["b0.down"][i], (downNibbles[i] - 8) * 2,
+      `down[${i}]`);
+  }
+  // f16 tensors load unchanged alongside quantized ones
+  assert.equal(m.tensors["embed"][0], 1);
+  assert.equal(m.tensors["embed"][1], 0.5);
+  assert.equal(m.tensors["embed"][2], -0.5);
+  assert.equal(m.tensors["embed"][3], 0.25);
+});
+
+test("v3 inference is deterministic and old kernels are untouched", () => {
+  const { buf } = buildTinyV3();
+  const a = new URLModel(buf).session();
+  const b = new URLModel(buf).session();
+  for (const id of [0, 1, 3, 2, 4]) {
+    const la = a.feed(id);
+    const lb = b.feed(id);
+    assert.deepEqual(Array.from(la), Array.from(lb));
+  }
+  // Archived (v1/v2) models must never take the fast kernel: its
+  // different summation order would break issued payloads
+  assert.equal(modelV2.fastKernels, false);
+  assert.equal(modelV1.fastKernels, false);
+});
+
+/*
+ * Chunked coding (payload version >= 3): URLs beyond the model
+ * context are coded as EOS-terminated context-restarting chunks in
+ * one arithmetic stream. Exercised here by re-versioning the shipped
+ * model; the real v3 model gets its own pinned vectors.
+ */
+test("chunked coding round-trips beyond-context URLs", () => {
+  const long = longPinnedLink;
+  assert.ok(model.tokenize(long.slice(8)).length + 1 >
+    model.maxLen, "test URL must exceed the model context");
+  // The archived v2 model refuses it (fell back to classic)...
+  assert.equal(neuralCompressToNumber(modelV2, long), null);
+  // ...the shipped chunked model codes it and round-trips exactly
+  const payload = compressHybrid(long, outputAlphabetASCII, model);
+  assert.equal(payloadSchemeVersion(payload, outputAlphabetASCII), 3);
+  assert.equal(decompressHybrid(payload, outputAlphabetASCII, model), long);
+  // ...and it beats classic for this long, structured URL
+  assert.ok(payload.length < compress(long, outputAlphabetASCII).length);
+
+  // A URL whose token count lands exactly on a chunk boundary ends
+  // with an empty final chunk and still round-trips
+  const capacity = model.maxLen - 2;
+  let boundary = "https://example.com/";
+  while (model.tokenize(boundary.slice(8)).length % capacity !== 0 ||
+         model.tokenize(boundary.slice(8)).length === 0) {
+    boundary += "x";
+  }
+  const bPayload = compressHybrid(boundary, outputAlphabetASCII, model);
+  assert.equal(decompressHybrid(bPayload, outputAlphabetASCII, model),
+    boundary);
+});
+
+test("chunk framing degenerates to the v2 scheme for short URLs", async () => {
+  // Bump the archived v2 model to version 3 (which enables chunking)
+  // and compare content bits against the true v2 encoder
+  const raw = (await readFile(new URL("../model/url-model-v2.bin", import.meta.url))).buffer;
+  const chunkedModel = new URLModel(withLinkVersion(raw, 3));
+  for (const link of ["https://www.example.com/some/path?a=1&b=2",
+                      "https://en.wikipedia.org/wiki/Hammer"]) {
+    const n2 = neuralCompressToNumber(modelV2, link);
+    const n3 = neuralCompressToNumber(chunkedModel, link);
+    // Strip the unary version markers; the coded content must match
+    assert.equal(n2 >> 3n, n3 >> 4n, link);
+  }
+});
+
+test("v3 loader applies per-group scales", () => {
+  // Minimal file: one int8 and one int4 tensor, 2x4, group size 2 -
+  // scales laid out (rows x cols/group), row-major
+  const F16 = { "1": 0x3c00, "0.5": 0x3800, "0.25": 0x3400, "2": 0x4000 };
+  const header = JSON.stringify({
+    format: "hamr-url-model-v3", vocab: 2, dim: 4, layers: 0, heads: 1,
+    mlpDim: 4, maxLen: 4, linkVersion: 3, tokens: ["a"],
+    tensors: [
+      { name: "g8", shape: [2, 4], dtype: "int8", group: 2 },
+      { name: "g4", shape: [2, 4], dtype: "int4", group: 2 }
+    ]
+  });
+  const hb = new TextEncoder().encode(header);
+  const buf = new ArrayBuffer(4 + hb.length + 64);
+  const view = new DataView(buf);
+  view.setUint32(0, hb.length, true);
+  new Uint8Array(buf, 4, hb.length).set(hb);
+  let o = 4 + hb.length;
+  // g8 scales: rows 2 x groups 2 = [1, 0.5, 0.25, 2]
+  for (const s of ["1", "0.5", "0.25", "2"]) { view.setUint16(o, F16[s], true); o += 2; }
+  const q8 = [10, -20, 30, -40, 50, -60, 70, -80];
+  for (const q of q8) { view.setInt8(o, q); o += 1; }
+  // g4 scales: [0.5, 2, 1, 0.25]
+  for (const s of ["0.5", "2", "1", "0.25"]) { view.setUint16(o, F16[s], true); o += 2; }
+  const q4 = [-8, 7, 3, -3, 5, -5, 0, 2]; // stored as value+8 nibbles
+  for (let i = 0; i < q4.length; i += 2) {
+    view.setUint8(o, (q4[i] + 8) | ((q4[i + 1] + 8) << 4)); o += 1;
+  }
+  const m = new URLModel(buf);
+  const exp8 = [10 * 1, -20 * 1, 30 * 0.5, -40 * 0.5,
+                50 * 0.25, -60 * 0.25, 70 * 2, -80 * 2];
+  const exp4 = [-8 * 0.5, 7 * 0.5, 3 * 2, -3 * 2,
+                5 * 1, -5 * 1, 0 * 0.25, 2 * 0.25];
+  assert.deepEqual(Array.from(m.tensors["g8"]), exp8);
+  assert.deepEqual(Array.from(m.tensors["g4"]), exp4);
 });

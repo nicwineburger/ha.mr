@@ -86,20 +86,24 @@ function detLog2 (x) {
 }
 
 /**
- * In-place softmax over a Float64Array using deterministic exp.
+ * In-place softmax over the first `n` elements of a Float64Array
+ * using deterministic exp. The length parameter lets the attention
+ * loop reuse one preallocated buffer for every context length; the
+ * arithmetic is unchanged.
  * @param {Float64Array} x Logits, replaced by probabilities
+ * @param {number} [n] How many leading elements participate
  */
-function softmax (x) {
+function softmax (x, n = x.length) {
   let max = -Infinity;
-  for (let i = 0; i < x.length; i ++) {
+  for (let i = 0; i < n; i ++) {
     if (x[i] > max) max = x[i];
   }
   let sum = 0;
-  for (let i = 0; i < x.length; i ++) {
+  for (let i = 0; i < n; i ++) {
     x[i] = detExp(x[i] - max);
     sum += x[i];
   }
-  for (let i = 0; i < x.length; i ++) x[i] /= sum;
+  for (let i = 0; i < n; i ++) x[i] /= sum;
 }
 
 /**
@@ -137,6 +141,34 @@ function matmul (weight, rows, cols, x, out) {
 }
 
 /**
+ * matmul with four interleaved partial sums, combined as
+ * (s0+s1)+(s2+s3). Roughly 3x faster than the sequential kernel: the
+ * single-accumulator loop is a dependency chain bottlenecked on FP
+ * add latency, which four independent accumulators hide.
+ *
+ * The summation ORDER differs from matmul(), so results differ in
+ * the last bits - still fully deterministic (the order is fixed by
+ * this code and every operation is correctly rounded), but only
+ * models whose payloads were ALWAYS encoded with this kernel may use
+ * it. v3+ model files opt in via their format version; v1/v2 models
+ * must keep matmul() forever or issued links would break.
+ * Requires cols % 4 == 0 (all v3 dimensions are multiples of 4).
+ */
+function matmul4 (weight, rows, cols, x, out) {
+  for (let r = 0; r < rows; r ++) {
+    let s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+    const base = r * cols;
+    for (let c = 0; c < cols; c += 4) {
+      s0 += weight[base + c] * x[c];
+      s1 += weight[base + c + 1] * x[c + 1];
+      s2 += weight[base + c + 2] * x[c + 2];
+      s3 += weight[base + c + 3] * x[c + 3];
+    }
+    out[r] = (s0 + s1) + (s2 + s3);
+  }
+}
+
+/**
  * The URL character model: a small causal transformer with learned
  * position embeddings, RMSNorm, and a ReLU MLP - all expressible in
  * correctly-rounded operations.
@@ -153,7 +185,8 @@ export class URLModel {
     const header = JSON.parse(
       new TextDecoder().decode(new Uint8Array(buffer, 4, headerLength)));
     if (header.format !== "hamr-url-model-v1" &&
-        header.format !== "hamr-url-model-v2") {
+        header.format !== "hamr-url-model-v2" &&
+        header.format !== "hamr-url-model-v3") {
       throw `Unknown model format: "${header.format}"`;
     }
     /*
@@ -187,17 +220,76 @@ export class URLModel {
      * (model/url-model-v<N>.bin). Absent in early files = version 1.
      */
     this.linkVersion = header.linkVersion || 1;
+    /*
+     * v3+ files evaluate with the 4-way-unrolled matmul kernel; its
+     * fixed summation order differs from the original kernel, so
+     * older formats must never switch (their issued payloads encode
+     * the original order's exact probabilities).
+     */
+    this.fastKernels = header.format === "hamr-url-model-v3";
 
+    /*
+     * Tensor data. v1/v2 tensors are float16. v3 tensors may instead
+     * be int8 or int4 with one float16 scale per output channel (per
+     * row): the blob is the scale array followed by row-major signed
+     * integer values (int4 packs two per byte, low nibble first,
+     * stored as value + 8).
+     *
+     * Weights are stored as Float32Array purely to halve memory
+     * traffic - the inference math is untouched. This is EXACT, not
+     * an approximation: an f16 value has an 11-bit significand, and
+     * a quantized weight is int (<= 8 bits) x f16 scale (<= 19
+     * significand bits in the product), so every stored value is
+     * exactly representable in f32, and reading f32 into a double
+     * computation converts exactly. All arithmetic still happens in
+     * f64 exactly as before (the pinned vectors verify this).
+     */
     this.tensors = {};
     let offset = 4 + headerLength;
-    for (const { name, shape } of header.tensors) {
+    for (const { name, shape, dtype, group } of header.tensors) {
       const count = shape.reduce((a, b) => a * b, 1);
-      const data = new Float64Array(count);
-      for (let i = 0; i < count; i ++) {
-        data[i] = halfToDouble(view.getUint16(offset + i * 2, true));
+      const data = new Float32Array(count);
+      if (dtype === "int8" || dtype === "int4") {
+        const rows = shape[0];
+        const cols = count / rows;
+        // One scale per output row, or per `group` input columns
+        // when the manifest sets a group size (group divides cols;
+        // int4 groups are even so packed pairs never straddle one)
+        const perRow = group ? cols / group : 1;
+        const scales = new Float64Array(rows * perRow);
+        for (let s = 0; s < scales.length; s ++) {
+          scales[s] = halfToDouble(view.getUint16(offset + s * 2, true));
+        }
+        offset += scales.length * 2;
+        const groupSize = group || cols;
+        if (dtype === "int8") {
+          for (let r = 0; r < rows; r ++) {
+            for (let c = 0; c < cols; c ++) {
+              const scale = scales[r * perRow + ((c / groupSize) | 0)];
+              data[r * cols + c] =
+                view.getInt8(offset + r * cols + c) * scale;
+            }
+          }
+          offset += count;
+        } else {
+          const rowBytes = cols / 2; // exporter guarantees even cols
+          for (let r = 0; r < rows; r ++) {
+            for (let b = 0; b < rowBytes; b ++) {
+              const byte = view.getUint8(offset + r * rowBytes + b);
+              const scale = scales[r * perRow + (((2 * b) / groupSize) | 0)];
+              data[r * cols + 2 * b] = ((byte & 0x0f) - 8) * scale;
+              data[r * cols + 2 * b + 1] = ((byte >> 4) - 8) * scale;
+            }
+          }
+          offset += count / 2;
+        }
+      } else {
+        for (let i = 0; i < count; i ++) {
+          data[i] = halfToDouble(view.getUint16(offset + i * 2, true));
+        }
+        offset += count * 2;
       }
       this.tensors[name] = data;
-      offset += count * 2;
     }
   }
 
@@ -263,6 +355,31 @@ export class URLModel {
     const { dim, heads, layers, mlpDim, vocab, maxLen, tensors } = this;
     const headDim = dim / heads;
     const attnScale = 1 / Math.sqrt(headDim);
+    /*
+     * Optimizations shared by every spawned session, none of which
+     * change any model's arithmetic: per-layer tensor references and
+     * the output-head/embedding/norm lookups are hoisted out of the
+     * hot loop, the attention score buffer is preallocated once per
+     * session (softmax takes an explicit length), and v3+ models
+     * select the unrolled matmul4 kernel (see fastKernels). Key/value
+     * caches stay per-position write-once arrays so forks share them
+     * by pointer copy.
+     */
+    const layerTensors = [];
+    for (let l = 0; l < layers; l ++) {
+      layerTensors.push({
+        norm1: tensors[`b${l}.norm1`],
+        qkv: tensors[`b${l}.qkv`],
+        proj: tensors[`b${l}.proj`],
+        norm2: tensors[`b${l}.norm2`],
+        up: tensors[`b${l}.up`],
+        down: tensors[`b${l}.down`]
+      });
+    }
+    const embed = tensors["embed"];
+    const pos = tensors["pos"];
+    const finalNorm = tensors["norm"];
+    const mm = this.fastKernels ? matmul4 : matmul;
 
     const spawn = (kInit, vInit, positionInit) => {
       // Per-layer caches of past keys/values, laid out per position
@@ -277,27 +394,27 @@ export class URLModel {
       const proj = new Float64Array(dim);
       const mlp = new Float64Array(mlpDim);
       const logits = new Float64Array(vocab);
+      const scores = new Float64Array(maxLen);
 
       const feed = (id) => {
         if (position >= maxLen) throw "Model context window exceeded.";
-        const embed = tensors["embed"];
-        const pos = tensors["pos"];
         for (let i = 0; i < dim; i ++) {
           x[i] = embed[id * dim + i] + pos[position * dim + i];
         }
 
         for (let l = 0; l < layers; l ++) {
+          const t = layerTensors[l];
           // Attention
-          rmsNorm(x, tensors[`b${l}.norm1`], h);
-          matmul(tensors[`b${l}.qkv`], 3 * dim, dim, h, qkv);
+          rmsNorm(x, t.norm1, h);
+          mm(t.qkv, 3 * dim, dim, h, qkv);
           kCache[l].push(qkv.slice(dim, 2 * dim));
           vCache[l].push(qkv.slice(2 * dim, 3 * dim));
           const keys = kCache[l];
           const values = vCache[l];
-          const scores = new Float64Array(keys.length);
+          const count = keys.length;
           for (let head = 0; head < heads; head ++) {
             const base = head * headDim;
-            for (let j = 0; j < keys.length; j ++) {
+            for (let j = 0; j < count; j ++) {
               let sum = 0;
               const k = keys[j];
               for (let i = 0; i < headDim; i ++) {
@@ -305,9 +422,9 @@ export class URLModel {
               }
               scores[j] = sum * attnScale;
             }
-            softmax(scores);
+            softmax(scores, count);
             for (let i = 0; i < headDim; i ++) attnOut[base + i] = 0;
-            for (let j = 0; j < values.length; j ++) {
+            for (let j = 0; j < count; j ++) {
               const v = values[j];
               const weight = scores[j];
               for (let i = 0; i < headDim; i ++) {
@@ -315,22 +432,22 @@ export class URLModel {
               }
             }
           }
-          matmul(tensors[`b${l}.proj`], dim, dim, attnOut, proj);
+          mm(t.proj, dim, dim, attnOut, proj);
           for (let i = 0; i < dim; i ++) x[i] += proj[i];
 
           // MLP
-          rmsNorm(x, tensors[`b${l}.norm2`], h);
-          matmul(tensors[`b${l}.up`], mlpDim, dim, h, mlp);
+          rmsNorm(x, t.norm2, h);
+          mm(t.up, mlpDim, dim, h, mlp);
           for (let i = 0; i < mlpDim; i ++) {
             if (mlp[i] < 0) mlp[i] = 0;
           }
-          matmul(tensors[`b${l}.down`], dim, mlpDim, mlp, proj);
+          mm(t.down, dim, mlpDim, mlp, proj);
           for (let i = 0; i < dim; i ++) x[i] += proj[i];
         }
 
-        rmsNorm(x, tensors["norm"], h);
+        rmsNorm(x, finalNorm, h);
         // Output head is tied to the embedding table
-        matmul(embed, vocab, dim, h, logits);
+        mm(embed, vocab, dim, h, logits);
         position ++;
         return logits;
       };
@@ -346,15 +463,65 @@ export class URLModel {
   }
 }
 
+/*
+ * Chunked coding (payload version >= 3): a URL longer than the model
+ * context is coded as consecutive EOS-terminated chunks of exactly
+ * chunkCapacity() tokens each, except the last. Every chunk restarts
+ * the model context, and the whole sequence is ONE arithmetic-coded
+ * stream (the probability model resets at each in-band EOS), so no
+ * chunk length prefixes are needed. Framing is by chunk size alone:
+ * an EOS after a full-capacity chunk means "another chunk follows",
+ * an EOS earlier is the end of the URL, and a URL ending exactly on
+ * a chunk boundary emits one final empty chunk (a lone EOS). Short
+ * URLs degenerate to a single chunk with bit-identical coding to the
+ * v1/v2 scheme. Older payload versions never chunk: their links were
+ * issued with the strict single-context behavior.
+ */
+function chunkCapacity (model) {
+  return model.maxLen - 2; // priming EOS + room for the terminator
+}
+
+/** Safety cap on total coded symbols for chunked payloads. */
+const CHUNKED_MAX_SYMBOLS = 4096;
+
+/**
+ * Frames a token sequence for chunked coding: capacity-sized chunks,
+ * each terminated by an in-band EOS, with a final empty chunk when
+ * the sequence ends exactly on a boundary. Short sequences come out
+ * as a single chunk, bit-identical to the unchunked v1/v2 framing.
+ * @param {URLModel} model Loaded model (linkVersion >= 3)
+ * @param {number[]} symbols Token ids (no EOS)
+ * @returns {number[]?} On-wire symbol sequence, or null if over the
+ *  chunked size cap
+ */
+function chunkFrame (model, symbols) {
+  const capacity = chunkCapacity(model);
+  const framed = [];
+  for (let i = 0; i < symbols.length; i += capacity) {
+    framed.push(...symbols.slice(i, i + capacity), EOS);
+  }
+  if (symbols.length % capacity === 0) {
+    framed.push(EOS); // empty final chunk: URL ended on a boundary
+  }
+  return framed.length > CHUNKED_MAX_SYMBOLS ? null : framed;
+}
+
 /**
  * Wraps a model into the probability callback the arithmetic coder
  * expects. Feeding is incremental: the coder always extends the
  * context by one symbol, so each call feeds only the newest token.
+ * For chunked models (version >= 3) an EOS in the context starts a
+ * fresh model session - the next chunk is predicted from a clean
+ * context window.
  * @param {URLModel} model Loaded model
+ * @param {{context: number[]}} [chunkState] Optional out-parameter
+ *  that receives the latest context (the decoder's terminal rule
+ *  needs it to measure the current chunk's length)
  * @returns {(context: number[]) => Float64Array} Probability callback
  */
-export function modelProbabilities (model) {
-  const session = model.session();
+export function modelProbabilities (model, chunkState = null) {
+  const chunked = model.linkVersion >= 3;
+  let session = model.session();
   let fed = 0;
   return (context) => {
     // The first call primes with EOS; afterwards feed new symbols
@@ -364,16 +531,43 @@ export function modelProbabilities (model) {
       fed = 1;
     }
     while (fed <= context.length) {
-      logits = session.feed(context[fed - 1]);
+      const symbol = context[fed - 1];
+      if (chunked && symbol === EOS) {
+        // Chunk boundary: restart the context window
+        session = model.session();
+        logits = session.feed(EOS);
+      } else {
+        logits = session.feed(symbol);
+      }
       fed ++;
     }
     if (logits === null) {
       throw "Arithmetic coder context out of sync with model session.";
     }
+    if (chunkState) chunkState.context = context;
     const probs = logits.slice();
     softmax(probs);
     return probs;
   };
+}
+
+/**
+ * Length of the chunk terminated by a just-decoded EOS: the trailing
+ * EOS-free run of the context, not counting that EOS itself. The
+ * decoder hands the SAME (mutated) array to the probability callback
+ * on every call, so by the time the terminal rule runs the array may
+ * already end with the EOS being judged - skip it either way.
+ * @param {number[]} context Symbols decoded so far
+ * @returns {number} Token count of the chunk the final EOS closes
+ */
+function closedChunkLength (context) {
+  let i = context.length - 1;
+  if (i >= 0 && context[i] === EOS) i --;
+  let run = 0;
+  for (; i >= 0 && context[i] !== EOS; i --) {
+    run ++;
+  }
+  return run;
 }
 
 /*
@@ -493,7 +687,11 @@ function searchSegmentations (model, text) {
  * @returns {BigInt} Payload number
  */
 function encodeSymbols (model, symbols, isHTTPS) {
-  const bits = arithmeticEncode(symbols.concat(EOS), modelProbabilities(model));
+  const coded = model.linkVersion >= 3
+    ? chunkFrame(model, symbols)
+    : symbols.concat(EOS);
+  if (coded === null) return null;
+  const bits = arithmeticEncode(coded, modelProbabilities(model));
 
   let number = 1n; // Sentinel to preserve leading zero bits
   for (const bit of bits) {
@@ -535,14 +733,19 @@ export function neuralCompressToNumber (model, input, { search = true } = {}) {
   const greedy = model.tokenize(text);
   if (greedy === null) return null;
   // Sequence overhead: one priming EOS plus the terminating EOS
-  if (greedy.length + 2 > model.maxLen) return null;
+  // Version >= 3 models chunk beyond-context URLs instead of bailing
+  if (model.linkVersion < 3 && greedy.length + 2 > model.maxLen) return null;
 
   // Search for cheaper segmentations. Character-level models have
   // only one segmentation, and version-1 token payload bits are
   // pinned to greedy (that model stays deployed purely to decode old
   // links), so the search applies to version 2 onwards.
   const candidates = [greedy];
-  if (search && model.tokens && model.linkVersion >= 2) {
+  // Beyond-context (chunked) URLs keep the greedy segmentation: the
+  // search's session forks would exceed the context window, and long
+  // URLs get their win from chunking itself
+  if (search && model.tokens && model.linkVersion >= 2 &&
+      greedy.length + 2 <= model.maxLen) {
     candidates.push(...searchSegmentations(model, text));
   }
 
@@ -555,6 +758,7 @@ export function neuralCompressToNumber (model, input, { search = true } = {}) {
     if (seen.has(key)) continue;
     seen.add(key);
     const number = encodeSymbols(model, symbols, isHTTPS);
+    if (number === null) continue; // over the chunked size cap
     // Smaller payload number = same or fewer output symbols
     if (best === null || number < best) best = number;
   }
@@ -588,9 +792,24 @@ export function neuralDecompressNumber (model, number) {
     bits.push(bitString.charCodeAt(i) - 0x30);
   }
 
-  const symbols = arithmeticDecode(
-    bits, modelProbabilities(model), (s) => s === EOS, model.maxLen);
-  symbols.pop(); // Drop EOS
+  let symbols;
+  if (model.linkVersion >= 3) {
+    // Chunked: an EOS ends the URL only if its chunk is short of
+    // capacity; a full chunk's EOS means another chunk follows. The
+    // chunkState handoff lets the terminal rule see the up-to-date
+    // context (the probability callback always runs first).
+    const capacity = chunkCapacity(model);
+    const chunkState = { context: [] };
+    symbols = arithmeticDecode(
+      bits, modelProbabilities(model, chunkState),
+      (s) => s === EOS && closedChunkLength(chunkState.context) < capacity,
+      CHUNKED_MAX_SYMBOLS);
+    symbols = symbols.filter((s) => s !== EOS); // drop chunk framing
+  } else {
+    symbols = arithmeticDecode(
+      bits, modelProbabilities(model), (s) => s === EOS, model.maxLen);
+    symbols.pop(); // Drop EOS
+  }
   return (isHTTPS ? "https://" : "http://") + model.detokenize(symbols);
 }
 
