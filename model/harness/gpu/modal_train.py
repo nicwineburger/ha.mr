@@ -78,11 +78,20 @@ def build_model(cfg, vocab_size):
     if qat:
         qmax = {"int8": 127, "int4": 7}[qat]
         qmin = {"int8": -127, "int4": -8}[qat]
+        group = cfg.get("qat_group", 0)  # 0 = one scale per output row
 
         def fake_quant(w):
-            scale = w.detach().abs().amax(dim=1, keepdim=True) \
-                .clamp(min=1e-6) / qmax
-            wq = (w / scale).round().clamp(qmin, qmax) * scale
+            if group:
+                rows, cols = w.shape
+                wg = w.view(rows, cols // group, group)
+                scale = wg.detach().abs().amax(dim=2, keepdim=True) \
+                    .clamp(min=1e-6) / qmax
+                wq = ((wg / scale).round().clamp(qmin, qmax)
+                      * scale).view(rows, cols)
+            else:
+                scale = w.detach().abs().amax(dim=1, keepdim=True) \
+                    .clamp(min=1e-6) / qmax
+                wq = (w / scale).round().clamp(qmin, qmax) * scale
             return w + (wq - w).detach()
 
         class Lin(nn.Linear):
@@ -500,6 +509,8 @@ def export_model(cfg: dict, out_name: str):
         tensors.append({"name": name, "shape": list(a.shape)})
         blobs.append(a.tobytes())
 
+    quant_group = cfg.get("quant_group", 0)
+
     def add_q(name, t):
         if not quant:
             return add(name, t)
@@ -508,18 +519,28 @@ def export_model(cfg: dict, out_name: str):
         qmin = {"int8": -127, "int4": -8}[quant]
         # f16 scales, so quantization here and dequantization in the
         # JS loader use the exact same numbers
-        scales = (np.abs(w).max(axis=1) / qmax).clip(min=1e-6) \
-            .astype(np.float16)
-        q = np.round(w / scales.astype(np.float32)[:, None]) \
-            .clip(qmin, qmax).astype(np.int8)
+        rows, cols = w.shape
+        if quant_group:
+            wg = w.reshape(rows, cols // quant_group, quant_group)
+            scales = (np.abs(wg).max(axis=2) / qmax).clip(min=1e-6) \
+                .astype(np.float16)  # (rows, cols/group)
+            q = np.round(wg / scales.astype(np.float32)[:, :, None]) \
+                .clip(qmin, qmax).astype(np.int8).reshape(rows, cols)
+        else:
+            scales = (np.abs(w).max(axis=1) / qmax).clip(min=1e-6) \
+                .astype(np.float16)
+            q = np.round(w / scales.astype(np.float32)[:, None]) \
+                .clip(qmin, qmax).astype(np.int8)
         if quant == "int4":
             u = (q.astype(np.int16) + 8).astype(np.uint8).reshape(-1)
             packed = (u[0::2] | (u[1::2] << 4)).astype(np.uint8)
             payload = packed.tobytes()
         else:
             payload = q.tobytes()
-        tensors.append({"name": name, "shape": list(w.shape),
-                        "dtype": quant})
+        entry = {"name": name, "shape": list(w.shape), "dtype": quant}
+        if quant_group:
+            entry["group"] = quant_group
+        tensors.append(entry)
         blobs.append(scales.tobytes() + payload)
 
     add("embed", model.embed.weight)

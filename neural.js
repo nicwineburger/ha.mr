@@ -246,21 +246,26 @@ export class URLModel {
      */
     this.tensors = {};
     let offset = 4 + headerLength;
-    for (const { name, shape, dtype } of header.tensors) {
+    for (const { name, shape, dtype, group } of header.tensors) {
       const count = shape.reduce((a, b) => a * b, 1);
       const data = new Float32Array(count);
       if (dtype === "int8" || dtype === "int4") {
         const rows = shape[0];
         const cols = count / rows;
-        const scales = new Float64Array(rows);
-        for (let r = 0; r < rows; r ++) {
-          scales[r] = halfToDouble(view.getUint16(offset + r * 2, true));
+        // One scale per output row, or per `group` input columns
+        // when the manifest sets a group size (group divides cols;
+        // int4 groups are even so packed pairs never straddle one)
+        const perRow = group ? cols / group : 1;
+        const scales = new Float64Array(rows * perRow);
+        for (let s = 0; s < scales.length; s ++) {
+          scales[s] = halfToDouble(view.getUint16(offset + s * 2, true));
         }
-        offset += rows * 2;
+        offset += scales.length * 2;
+        const groupSize = group || cols;
         if (dtype === "int8") {
           for (let r = 0; r < rows; r ++) {
-            const scale = scales[r];
             for (let c = 0; c < cols; c ++) {
+              const scale = scales[r * perRow + ((c / groupSize) | 0)];
               data[r * cols + c] =
                 view.getInt8(offset + r * cols + c) * scale;
             }
@@ -269,9 +274,9 @@ export class URLModel {
         } else {
           const rowBytes = cols / 2; // exporter guarantees even cols
           for (let r = 0; r < rows; r ++) {
-            const scale = scales[r];
             for (let b = 0; b < rowBytes; b ++) {
               const byte = view.getUint8(offset + r * rowBytes + b);
+              const scale = scales[r * perRow + (((2 * b) / groupSize) | 0)];
               data[r * cols + 2 * b] = ((byte & 0x0f) - 8) * scale;
               data[r * cols + 2 * b + 1] = ((byte >> 4) - 8) * scale;
             }

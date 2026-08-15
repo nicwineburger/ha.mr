@@ -523,3 +523,40 @@ test("chunked coding is bit-identical to v2 for short URLs", async () => {
     assert.equal(n2 >> 3n, n3 >> 4n, link);
   }
 });
+
+test("v3 loader applies per-group scales", () => {
+  // Minimal file: one int8 and one int4 tensor, 2x4, group size 2 -
+  // scales laid out (rows x cols/group), row-major
+  const F16 = { "1": 0x3c00, "0.5": 0x3800, "0.25": 0x3400, "2": 0x4000 };
+  const header = JSON.stringify({
+    format: "hamr-url-model-v3", vocab: 2, dim: 4, layers: 0, heads: 1,
+    mlpDim: 4, maxLen: 4, linkVersion: 3, tokens: ["a"],
+    tensors: [
+      { name: "g8", shape: [2, 4], dtype: "int8", group: 2 },
+      { name: "g4", shape: [2, 4], dtype: "int4", group: 2 }
+    ]
+  });
+  const hb = new TextEncoder().encode(header);
+  const buf = new ArrayBuffer(4 + hb.length + 64);
+  const view = new DataView(buf);
+  view.setUint32(0, hb.length, true);
+  new Uint8Array(buf, 4, hb.length).set(hb);
+  let o = 4 + hb.length;
+  // g8 scales: rows 2 x groups 2 = [1, 0.5, 0.25, 2]
+  for (const s of ["1", "0.5", "0.25", "2"]) { view.setUint16(o, F16[s], true); o += 2; }
+  const q8 = [10, -20, 30, -40, 50, -60, 70, -80];
+  for (const q of q8) { view.setInt8(o, q); o += 1; }
+  // g4 scales: [0.5, 2, 1, 0.25]
+  for (const s of ["0.5", "2", "1", "0.25"]) { view.setUint16(o, F16[s], true); o += 2; }
+  const q4 = [-8, 7, 3, -3, 5, -5, 0, 2]; // stored as value+8 nibbles
+  for (let i = 0; i < q4.length; i += 2) {
+    view.setUint8(o, (q4[i] + 8) | ((q4[i + 1] + 8) << 4)); o += 1;
+  }
+  const m = new URLModel(buf);
+  const exp8 = [10 * 1, -20 * 1, 30 * 0.5, -40 * 0.5,
+                50 * 0.25, -60 * 0.25, 70 * 2, -80 * 2];
+  const exp4 = [-8 * 0.5, 7 * 0.5, 3 * 2, -3 * 2,
+                5 * 1, -5 * 1, 0 * 0.25, 2 * 0.25];
+  assert.deepEqual(Array.from(m.tensors["g8"]), exp8);
+  assert.deepEqual(Array.from(m.tensors["g4"]), exp4);
+});
