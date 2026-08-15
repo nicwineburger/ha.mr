@@ -79,6 +79,22 @@ test("CLI decodes links from archived model versions", async () => {
   assert.equal(run(`https://ha.mr#${payload}`), link);
 });
 
+test("CLI --clean strips tracking parameters before compressing", () => {
+  // The flag may appear anywhere in argv; the short link must decode
+  // to the CLEANED url (cleaning is lossy by design)
+  const link = "https://www.example.com/page?utm_source=news&id=5&fbclid=abc";
+  const short = run("--clean", link);
+  assert.equal(run(short), "https://www.example.com/page?id=5");
+  const shortFlagAfter = run(link, "--clean");
+  assert.equal(run(shortFlagAfter), "https://www.example.com/page?id=5");
+});
+
+test("CLI keeps tracking parameters without --clean", () => {
+  const link = "https://www.example.com/page?utm_source=news&id=5";
+  const short = run(link);
+  assert.equal(run(short), link);
+});
+
 test("CLI rejects unknown alphabets", () => {
   assert.throws(() => run("https://example.com", "bogus"));
 });

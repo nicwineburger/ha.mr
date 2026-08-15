@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import { compressHybrid, decompressHybrid, payloadSchemeVersion } from "./hybrid.js";
+import { cleanLink } from "./clean.js";
 import { URLModel } from "./neural.js";
 import {
   outputAlphabetASCII,
@@ -25,10 +26,18 @@ try {
 // to use a self-hosted deployment (defaults to the original site)
 const domain = (process.env.HAMR_DOMAIN || "ha.mr").toLowerCase();
 
-const input = process.argv[2]?.trim();
-const alphabetName = process.argv[3]?.trim() || "ascii";
+// "--clean" may appear anywhere in argv; the remaining arguments keep
+// their positional meaning
+const args = process.argv.slice(2);
+const clean = args.includes("--clean");
+const positional = args.filter(arg => arg !== "--clean");
+
+const input = positional[0]?.trim();
+const alphabetName = positional[1]?.trim() || "ascii";
 if (!input) {
-  console.error(`Usage: hamr <link> [ascii|qr|emoji]`);
+  console.error(`Usage: hamr [--clean] <link> [ascii|qr|emoji]`);
+  console.error(`  --clean  strip known tracking parameters before compressing`);
+  console.error(`           (lossy: the short link decodes to the cleaned URL)`);
   console.error(`Set HAMR_DOMAIN to use a domain other than ha.mr.`);
   process.exit(1);
 }
@@ -67,6 +76,17 @@ if (payload) {
   process.exit(0);
 }
 
+// Cleaning applies only when compressing; the note goes to stderr so
+// stdout stays the bare short link for piping
+let link = input;
+if (clean) {
+  const result = cleanLink(input);
+  link = result.cleaned;
+  if (result.removed.length > 0) {
+    console.error(`cleaned: removed ${result.removed.join(", ")}`);
+  }
+}
+
 let alphabet = outputAlphabetASCII;
 if (alphabetName === "qr") alphabet = outputAlphabetQR;
 else if (alphabetName === "emoji") alphabet = outputAlphabetEmoji;
@@ -77,7 +97,7 @@ else if (alphabetName !== "ascii") {
 }
 
 if (alphabetName === "qr") {
-  console.log(`HTTP://${domain.toUpperCase()}/` + compressHybrid(input, alphabet, model));
+  console.log(`HTTP://${domain.toUpperCase()}/` + compressHybrid(link, alphabet, model));
 } else {
-  console.log(`https://${domain}#` + compressHybrid(input, alphabet, model));
+  console.log(`https://${domain}#` + compressHybrid(link, alphabet, model));
 }
