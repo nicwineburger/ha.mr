@@ -510,10 +510,15 @@ function encodeSymbols (model, symbols, isHTTPS) {
  * Compresses a link with the neural coder into a raw payload number.
  * @param {URLModel} model Loaded model
  * @param {string} input Link to compress
+ * @param {{search?: boolean}} [options] `search: false` skips the
+ *  tokenization search (~10x faster, exact pre-search greedy
+ *  behavior) - for latency-sensitive callers like per-keystroke
+ *  rendering; the searched result can only be smaller, never different
+ *  in validity
  * @returns {BigInt?} Payload number, or null if the link doesn't fit
  *  the model (too long, or contains bytes outside the vocabulary)
  */
-export function neuralCompressToNumber (model, input) {
+export function neuralCompressToNumber (model, input, { search = true } = {}) {
   let url;
   if (URL.canParse(input)) {
     url = new URL(input);
@@ -537,7 +542,7 @@ export function neuralCompressToNumber (model, input) {
   // pinned to greedy (that model stays deployed purely to decode old
   // links), so the search applies to version 2 onwards.
   const candidates = [greedy];
-  if (model.tokens && model.linkVersion >= 2) {
+  if (search && model.tokens && model.linkVersion >= 2) {
     candidates.push(...searchSegmentations(model, text));
   }
 

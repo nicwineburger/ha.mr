@@ -193,6 +193,15 @@ test("searched payloads never exceed greedy payloads", () => {
   }
 });
 
+test("search opt-out reproduces the greedy encoder exactly", () => {
+  // The browser's typing path encodes with search disabled for
+  // latency; that must be bit-identical to the pre-search encoder
+  for (const link of neuralCases) {
+    assert.equal(neuralCompressToNumber(model, link, { search: false }),
+      greedyNeuralNumber(model, link), link);
+  }
+});
+
 test("encoding is deterministic", () => {
   // The tokenization search must break ties consistently: the same
   // link always yields the same payload

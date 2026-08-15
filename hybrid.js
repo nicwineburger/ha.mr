@@ -24,9 +24,11 @@ import {
  * @param {string} input Link to compress
  * @param {string[]} alphabet Output alphabet as array of characters/strings
  * @param {URLModel?} model Loaded model, or null for classic-only
+ * @param {{search?: boolean}} [options] Neural encoder options
+ *  (see neuralCompressToNumber); omitted = full tokenization search
  * @returns {string} Output payload (not a full link!)
  */
-export function compressHybrid (input, alphabet, model) {
+export function compressHybrid (input, alphabet, model, options) {
   // Either scheme may fail where the other succeeds (e.g. the classic
   // domain dictionary can't encode hostnames containing "_", which
   // are invalid DNS but do occur in the wild) - only fail if both do.
@@ -39,7 +41,7 @@ export function compressHybrid (input, alphabet, model) {
   }
   if (model) {
     try {
-      const neural = neuralCompressToNumber(model, input);
+      const neural = neuralCompressToNumber(model, input, options);
       // Smaller payload number = same or fewer output symbols
       if (neural !== null && (best === null || neural < best)) best = neural;
     } catch (e) {

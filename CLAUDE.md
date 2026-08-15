@@ -58,7 +58,7 @@ decoded by `404.html`). Deployed on GitHub Pages from the repo root.
 
 ## Commands
 
-- `npm test` — full suite (40 tests): round-trips, normalizations,
+- `npm test` — full suite (41 tests): round-trips, normalizations,
   pinned vectors per version, version routing, CLI. CI also diffs
   `index.html`/`404.html`.
 - `node model/benchmark.mjs <urls-file> [limit]` — real-coder
