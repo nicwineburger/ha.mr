@@ -1,4 +1,5 @@
 import { compressHybrid, decompressHybrid, payloadSchemeVersion } from "./hybrid.js";
+import { cleanLink } from "./clean.js";
 import { URLModel } from "./neural.js";
 import {
   outputAlphabetASCII,
@@ -44,12 +45,14 @@ if (siteHost !== "ha.mr") {
 
 const settings = {
   emoji: false,
-  qr: false
+  qr: false,
+  clean: false
 };
 
 const settingsElements = {
   emoji: "#settings-emoji",
-  qr: "#settings-qr"
+  qr: "#settings-qr",
+  clean: "#settings-clean"
 };
 
 for (const setting in settingsElements) {
@@ -75,6 +78,7 @@ const inputLinkElement = document.querySelector("#input-link");
 const outputLinkElement = document.querySelector("#output-link");
 const outputRatioElement = document.querySelector("#output-ratio");
 const queryWarningElement = document.querySelector("#query-warning");
+const cleanNoteElement = document.querySelector("#clean-note");
 
 const qrCodeImage = document.querySelector("#qrcode");
 const qrCodeCorrectionLevelContainer = document.querySelector("#qr-correct-level-container");
@@ -97,7 +101,22 @@ function updateOutput () {
 }
 
 function renderOutput (activeModel) {
-  const input = inputLinkElement.value.trim();
+  let input = inputLinkElement.value.trim();
+  // Cleaning is lossy (the short link decodes to the cleaned URL), so
+  // it only happens when the checkbox is on, and the stripped
+  // parameters are shown so the result is never a surprise
+  let removedParams = [];
+  if (settings.clean && input) {
+    const result = cleanLink(input);
+    input = result.cleaned;
+    removedParams = result.removed;
+  }
+  if (removedParams.length > 0) {
+    cleanNoteElement.textContent = `removed: ${removedParams.join(", ")}`;
+    cleanNoteElement.style.display = "block";
+  } else {
+    cleanNoteElement.style.display = "none";
+  }
   try {
     const alphabet = settings.emoji ? outputAlphabetEmoji : outputAlphabetASCII;
     const output = compressHybrid(input, alphabet, activeModel);
@@ -174,6 +193,7 @@ function renderOutput (activeModel) {
     outputRatioElement.style.color = "rgba(255, 255, 255, 0)";
     outputLinkElement.removeAttribute("href");
     queryWarningElement.style.display = "none";
+    cleanNoteElement.style.display = "none";
   }
 }
 inputLinkElement.addEventListener("input", updateOutput);

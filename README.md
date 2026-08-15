@@ -37,6 +37,16 @@ node standalone.js "https://ha.mr#..."        # decode a compressed link
 
 Or install it as a global `hamr` command with `npm install -g .`.
 
+### Clean links (opt-in)
+Both the website ("Strip tracking parameters" checkbox) and the CLI (`--clean` flag) can strip known tracking query parameters before compressing:
+
+```sh
+node standalone.js --clean "https://example.com/page?utm_source=news&id=5"
+# stderr: cleaned: removed utm_source
+```
+
+This is **deliberately lossy**: the short link decodes to the *cleaned* URL, not the one you pasted — which is why it's off by default. The list (`clean.js`) is conservative: only parameters that are pure cross-site/campaign tracking and never affect page content (`utm_*`, `gclid`, `fbclid`, `mc_eid`, ...). Ambiguous names that some sites use functionally (`ref`, `q`, `id`, `page`, `source`, ...) are never stripped, and everything that survives is preserved byte-exact. The UI and the CLI both report exactly which parameters were removed.
+
 ### Tests
 ```sh
 npm test
