@@ -472,3 +472,54 @@ test("v3 inference is deterministic and the v2 kernel is untouched", () => {
   assert.equal(model.fastKernels, false);
   assert.equal(modelV1.fastKernels, false);
 });
+
+/*
+ * Chunked coding (payload version >= 3): URLs beyond the model
+ * context are coded as EOS-terminated context-restarting chunks in
+ * one arithmetic stream. Exercised here by re-versioning the shipped
+ * model; the real v3 model gets its own pinned vectors.
+ */
+test("chunked coding round-trips beyond-context URLs", async () => {
+  const raw = (await readFile(new URL("../model/url-model.bin", import.meta.url))).buffer;
+  const chunkedModel = new URLModel(withLinkVersion(raw, 3));
+
+  const long = "https://data.example-archive.org/collections/2024/expedition-photos/"
+    + "region-north-atlantic/vessel-research-7/deck-camera-03/"
+    + "capture-2024-06-19T14-22-51Z-frame-000482-exposure-auto-wb-daylight.jpg"
+    + "?checksum=9f3a1c77d2e648b0&signature=vRt2LpQ8xYw4Nc6bJmH0aZsEuDkFgO51"
+    + "&expires=1718900000&session=b81f2ce4a90d47e3";
+  assert.ok(chunkedModel.tokenize(long.slice(8)).length + 1 >
+    chunkedModel.maxLen, "test URL must exceed the model context");
+  // The v2 model refuses it (falls back to classic in the hybrid)...
+  assert.equal(neuralCompressToNumber(model, long), null);
+  // ...the chunked model codes it and round-trips exactly
+  const payload = compressHybrid(long, outputAlphabetASCII, chunkedModel);
+  assert.equal(payloadSchemeVersion(payload, outputAlphabetASCII), 3);
+  assert.equal(decompressHybrid(payload, outputAlphabetASCII, chunkedModel), long);
+  // ...and it beats classic for this long, structured URL
+  assert.ok(payload.length < compress(long, outputAlphabetASCII).length);
+
+  // A URL whose token count lands exactly on a chunk boundary ends
+  // with an empty final chunk and still round-trips
+  const capacity = chunkedModel.maxLen - 2;
+  let boundary = "https://example.com/";
+  while (chunkedModel.tokenize(boundary.slice(8)).length % capacity !== 0 ||
+         chunkedModel.tokenize(boundary.slice(8)).length === 0) {
+    boundary += "x";
+  }
+  const bPayload = compressHybrid(boundary, outputAlphabetASCII, chunkedModel);
+  assert.equal(decompressHybrid(bPayload, outputAlphabetASCII, chunkedModel),
+    boundary);
+});
+
+test("chunked coding is bit-identical to v2 for short URLs", async () => {
+  const raw = (await readFile(new URL("../model/url-model.bin", import.meta.url))).buffer;
+  const chunkedModel = new URLModel(withLinkVersion(raw, 3));
+  for (const link of ["https://www.example.com/some/path?a=1&b=2",
+                      "https://en.wikipedia.org/wiki/Hammer"]) {
+    const n2 = neuralCompressToNumber(model, link);
+    const n3 = neuralCompressToNumber(chunkedModel, link);
+    // Strip the unary version markers; the coded content must match
+    assert.equal(n2 >> 3n, n3 >> 4n, link);
+  }
+});

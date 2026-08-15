@@ -458,15 +458,65 @@ export class URLModel {
   }
 }
 
+/*
+ * Chunked coding (payload version >= 3): a URL longer than the model
+ * context is coded as consecutive EOS-terminated chunks of exactly
+ * chunkCapacity() tokens each, except the last. Every chunk restarts
+ * the model context, and the whole sequence is ONE arithmetic-coded
+ * stream (the probability model resets at each in-band EOS), so no
+ * chunk length prefixes are needed. Framing is by chunk size alone:
+ * an EOS after a full-capacity chunk means "another chunk follows",
+ * an EOS earlier is the end of the URL, and a URL ending exactly on
+ * a chunk boundary emits one final empty chunk (a lone EOS). Short
+ * URLs degenerate to a single chunk with bit-identical coding to the
+ * v1/v2 scheme. Older payload versions never chunk: their links were
+ * issued with the strict single-context behavior.
+ */
+function chunkCapacity (model) {
+  return model.maxLen - 2; // priming EOS + room for the terminator
+}
+
+/** Safety cap on total coded symbols for chunked payloads. */
+const CHUNKED_MAX_SYMBOLS = 4096;
+
+/**
+ * Frames a token sequence for chunked coding: capacity-sized chunks,
+ * each terminated by an in-band EOS, with a final empty chunk when
+ * the sequence ends exactly on a boundary. Short sequences come out
+ * as a single chunk, bit-identical to the unchunked v1/v2 framing.
+ * @param {URLModel} model Loaded model (linkVersion >= 3)
+ * @param {number[]} symbols Token ids (no EOS)
+ * @returns {number[]?} On-wire symbol sequence, or null if over the
+ *  chunked size cap
+ */
+function chunkFrame (model, symbols) {
+  const capacity = chunkCapacity(model);
+  const framed = [];
+  for (let i = 0; i < symbols.length; i += capacity) {
+    framed.push(...symbols.slice(i, i + capacity), EOS);
+  }
+  if (symbols.length % capacity === 0) {
+    framed.push(EOS); // empty final chunk: URL ended on a boundary
+  }
+  return framed.length > CHUNKED_MAX_SYMBOLS ? null : framed;
+}
+
 /**
  * Wraps a model into the probability callback the arithmetic coder
  * expects. Feeding is incremental: the coder always extends the
  * context by one symbol, so each call feeds only the newest token.
+ * For chunked models (version >= 3) an EOS in the context starts a
+ * fresh model session - the next chunk is predicted from a clean
+ * context window.
  * @param {URLModel} model Loaded model
+ * @param {{context: number[]}} [chunkState] Optional out-parameter
+ *  that receives the latest context (the decoder's terminal rule
+ *  needs it to measure the current chunk's length)
  * @returns {(context: number[]) => Float64Array} Probability callback
  */
-export function modelProbabilities (model) {
-  const session = model.session();
+export function modelProbabilities (model, chunkState = null) {
+  const chunked = model.linkVersion >= 3;
+  let session = model.session();
   let fed = 0;
   return (context) => {
     // The first call primes with EOS; afterwards feed new symbols
@@ -476,16 +526,43 @@ export function modelProbabilities (model) {
       fed = 1;
     }
     while (fed <= context.length) {
-      logits = session.feed(context[fed - 1]);
+      const symbol = context[fed - 1];
+      if (chunked && symbol === EOS) {
+        // Chunk boundary: restart the context window
+        session = model.session();
+        logits = session.feed(EOS);
+      } else {
+        logits = session.feed(symbol);
+      }
       fed ++;
     }
     if (logits === null) {
       throw "Arithmetic coder context out of sync with model session.";
     }
+    if (chunkState) chunkState.context = context;
     const probs = logits.slice();
     softmax(probs);
     return probs;
   };
+}
+
+/**
+ * Length of the chunk terminated by a just-decoded EOS: the trailing
+ * EOS-free run of the context, not counting that EOS itself. The
+ * decoder hands the SAME (mutated) array to the probability callback
+ * on every call, so by the time the terminal rule runs the array may
+ * already end with the EOS being judged - skip it either way.
+ * @param {number[]} context Symbols decoded so far
+ * @returns {number} Token count of the chunk the final EOS closes
+ */
+function closedChunkLength (context) {
+  let i = context.length - 1;
+  if (i >= 0 && context[i] === EOS) i --;
+  let run = 0;
+  for (; i >= 0 && context[i] !== EOS; i --) {
+    run ++;
+  }
+  return run;
 }
 
 /*
@@ -605,7 +682,11 @@ function searchSegmentations (model, text) {
  * @returns {BigInt} Payload number
  */
 function encodeSymbols (model, symbols, isHTTPS) {
-  const bits = arithmeticEncode(symbols.concat(EOS), modelProbabilities(model));
+  const coded = model.linkVersion >= 3
+    ? chunkFrame(model, symbols)
+    : symbols.concat(EOS);
+  if (coded === null) return null;
+  const bits = arithmeticEncode(coded, modelProbabilities(model));
 
   let number = 1n; // Sentinel to preserve leading zero bits
   for (const bit of bits) {
@@ -647,14 +728,19 @@ export function neuralCompressToNumber (model, input, { search = true } = {}) {
   const greedy = model.tokenize(text);
   if (greedy === null) return null;
   // Sequence overhead: one priming EOS plus the terminating EOS
-  if (greedy.length + 2 > model.maxLen) return null;
+  // Version >= 3 models chunk beyond-context URLs instead of bailing
+  if (model.linkVersion < 3 && greedy.length + 2 > model.maxLen) return null;
 
   // Search for cheaper segmentations. Character-level models have
   // only one segmentation, and version-1 token payload bits are
   // pinned to greedy (that model stays deployed purely to decode old
   // links), so the search applies to version 2 onwards.
   const candidates = [greedy];
-  if (search && model.tokens && model.linkVersion >= 2) {
+  // Beyond-context (chunked) URLs keep the greedy segmentation: the
+  // search's session forks would exceed the context window, and long
+  // URLs get their win from chunking itself
+  if (search && model.tokens && model.linkVersion >= 2 &&
+      greedy.length + 2 <= model.maxLen) {
     candidates.push(...searchSegmentations(model, text));
   }
 
@@ -667,6 +753,7 @@ export function neuralCompressToNumber (model, input, { search = true } = {}) {
     if (seen.has(key)) continue;
     seen.add(key);
     const number = encodeSymbols(model, symbols, isHTTPS);
+    if (number === null) continue; // over the chunked size cap
     // Smaller payload number = same or fewer output symbols
     if (best === null || number < best) best = number;
   }
@@ -700,9 +787,24 @@ export function neuralDecompressNumber (model, number) {
     bits.push(bitString.charCodeAt(i) - 0x30);
   }
 
-  const symbols = arithmeticDecode(
-    bits, modelProbabilities(model), (s) => s === EOS, model.maxLen);
-  symbols.pop(); // Drop EOS
+  let symbols;
+  if (model.linkVersion >= 3) {
+    // Chunked: an EOS ends the URL only if its chunk is short of
+    // capacity; a full chunk's EOS means another chunk follows. The
+    // chunkState handoff lets the terminal rule see the up-to-date
+    // context (the probability callback always runs first).
+    const capacity = chunkCapacity(model);
+    const chunkState = { context: [] };
+    symbols = arithmeticDecode(
+      bits, modelProbabilities(model, chunkState),
+      (s) => s === EOS && closedChunkLength(chunkState.context) < capacity,
+      CHUNKED_MAX_SYMBOLS);
+    symbols = symbols.filter((s) => s !== EOS); // drop chunk framing
+  } else {
+    symbols = arithmeticDecode(
+      bits, modelProbabilities(model), (s) => s === EOS, model.maxLen);
+    symbols.pop(); // Drop EOS
+  }
   return (isHTTPS ? "https://" : "http://") + model.detokenize(symbols);
 }
 
