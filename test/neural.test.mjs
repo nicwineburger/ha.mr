@@ -347,16 +347,22 @@ test("searched v2 payloads improve on superseded greedy payloads", () => {
   }
 });
 
-test("v1 and v2 payloads refuse each other's models", () => {
+test("payloads of every version refuse every other version's model", () => {
   const link = "https://www.example.com/cross-version";
-  const p1 = compressHybrid(link, outputAlphabetASCII, modelV1);
-  const p2 = compressHybrid(link, outputAlphabetASCII, model);
-  assert.equal(payloadSchemeVersion(p1, outputAlphabetASCII), 1);
-  assert.equal(payloadSchemeVersion(p2, outputAlphabetASCII), 2);
-  assert.equal(decompressHybrid(p1, outputAlphabetASCII, modelV1), link);
-  assert.equal(decompressHybrid(p2, outputAlphabetASCII, model), link);
-  assert.throws(() => decompressHybrid(p1, outputAlphabetASCII, model), /version/);
-  assert.throws(() => decompressHybrid(p2, outputAlphabetASCII, modelV1), /version/);
+  const versions = [[1, modelV1], [2, modelV2], [3, model]];
+  const payloads = versions.map(([v, m]) => {
+    const p = compressHybrid(link, outputAlphabetASCII, m);
+    assert.equal(payloadSchemeVersion(p, outputAlphabetASCII), v);
+    assert.equal(decompressHybrid(p, outputAlphabetASCII, m), link);
+    return p;
+  });
+  for (const [i, [, m]] of versions.entries()) {
+    for (const [j, p] of payloads.entries()) {
+      if (i !== j) {
+        assert.throws(() => decompressHybrid(p, outputAlphabetASCII, m), /version/);
+      }
+    }
+  }
 });
 
 /** Rebuilds a model buffer with a different linkVersion in its header. */
@@ -497,7 +503,7 @@ test("v3 loader dequantizes int8 and int4 tensors exactly", () => {
   assert.equal(m.tensors["embed"][3], 0.25);
 });
 
-test("v3 inference is deterministic and the v2 kernel is untouched", () => {
+test("v3 inference is deterministic and old kernels are untouched", () => {
   const { buf } = buildTinyV3();
   const a = new URLModel(buf).session();
   const b = new URLModel(buf).session();
@@ -506,9 +512,9 @@ test("v3 inference is deterministic and the v2 kernel is untouched", () => {
     const lb = b.feed(id);
     assert.deepEqual(Array.from(la), Array.from(lb));
   }
-  // Existing (v2) models must never take the fast kernel: its
+  // Archived (v1/v2) models must never take the fast kernel: its
   // different summation order would break issued payloads
-  assert.equal(model.fastKernels, false);
+  assert.equal(modelV2.fastKernels, false);
   assert.equal(modelV1.fastKernels, false);
 });
 
@@ -518,45 +524,40 @@ test("v3 inference is deterministic and the v2 kernel is untouched", () => {
  * one arithmetic stream. Exercised here by re-versioning the shipped
  * model; the real v3 model gets its own pinned vectors.
  */
-test("chunked coding round-trips beyond-context URLs", async () => {
-  const raw = (await readFile(new URL("../model/url-model.bin", import.meta.url))).buffer;
-  const chunkedModel = new URLModel(withLinkVersion(raw, 3));
-
-  const long = "https://data.example-archive.org/collections/2024/expedition-photos/"
-    + "region-north-atlantic/vessel-research-7/deck-camera-03/"
-    + "capture-2024-06-19T14-22-51Z-frame-000482-exposure-auto-wb-daylight.jpg"
-    + "?checksum=9f3a1c77d2e648b0&signature=vRt2LpQ8xYw4Nc6bJmH0aZsEuDkFgO51"
-    + "&expires=1718900000&session=b81f2ce4a90d47e3";
-  assert.ok(chunkedModel.tokenize(long.slice(8)).length + 1 >
-    chunkedModel.maxLen, "test URL must exceed the model context");
-  // The v2 model refuses it (falls back to classic in the hybrid)...
-  assert.equal(neuralCompressToNumber(model, long), null);
-  // ...the chunked model codes it and round-trips exactly
-  const payload = compressHybrid(long, outputAlphabetASCII, chunkedModel);
+test("chunked coding round-trips beyond-context URLs", () => {
+  const long = longPinnedLink;
+  assert.ok(model.tokenize(long.slice(8)).length + 1 >
+    model.maxLen, "test URL must exceed the model context");
+  // The archived v2 model refuses it (fell back to classic)...
+  assert.equal(neuralCompressToNumber(modelV2, long), null);
+  // ...the shipped chunked model codes it and round-trips exactly
+  const payload = compressHybrid(long, outputAlphabetASCII, model);
   assert.equal(payloadSchemeVersion(payload, outputAlphabetASCII), 3);
-  assert.equal(decompressHybrid(payload, outputAlphabetASCII, chunkedModel), long);
+  assert.equal(decompressHybrid(payload, outputAlphabetASCII, model), long);
   // ...and it beats classic for this long, structured URL
   assert.ok(payload.length < compress(long, outputAlphabetASCII).length);
 
   // A URL whose token count lands exactly on a chunk boundary ends
   // with an empty final chunk and still round-trips
-  const capacity = chunkedModel.maxLen - 2;
+  const capacity = model.maxLen - 2;
   let boundary = "https://example.com/";
-  while (chunkedModel.tokenize(boundary.slice(8)).length % capacity !== 0 ||
-         chunkedModel.tokenize(boundary.slice(8)).length === 0) {
+  while (model.tokenize(boundary.slice(8)).length % capacity !== 0 ||
+         model.tokenize(boundary.slice(8)).length === 0) {
     boundary += "x";
   }
-  const bPayload = compressHybrid(boundary, outputAlphabetASCII, chunkedModel);
-  assert.equal(decompressHybrid(bPayload, outputAlphabetASCII, chunkedModel),
+  const bPayload = compressHybrid(boundary, outputAlphabetASCII, model);
+  assert.equal(decompressHybrid(bPayload, outputAlphabetASCII, model),
     boundary);
 });
 
-test("chunked coding is bit-identical to v2 for short URLs", async () => {
-  const raw = (await readFile(new URL("../model/url-model.bin", import.meta.url))).buffer;
+test("chunk framing degenerates to the v2 scheme for short URLs", async () => {
+  // Bump the archived v2 model to version 3 (which enables chunking)
+  // and compare content bits against the true v2 encoder
+  const raw = (await readFile(new URL("../model/url-model-v2.bin", import.meta.url))).buffer;
   const chunkedModel = new URLModel(withLinkVersion(raw, 3));
   for (const link of ["https://www.example.com/some/path?a=1&b=2",
                       "https://en.wikipedia.org/wiki/Hammer"]) {
-    const n2 = neuralCompressToNumber(model, link);
+    const n2 = neuralCompressToNumber(modelV2, link);
     const n3 = neuralCompressToNumber(chunkedModel, link);
     // Strip the unary version markers; the coded content must match
     assert.equal(n2 >> 3n, n3 >> 4n, link);
