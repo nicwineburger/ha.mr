@@ -108,3 +108,31 @@ is pennies/month. The teacher's f16 weights are also archived on
 this branch under `teacher/` (split for GitHub's file-size limit),
 so only the fp32 optimizer-state checkpoint and the corpus would be
 lost with the volume.
+
+## Payload v3: 21.6M distilled + quantized (later campaign)
+
+A later campaign (not reflected in the table above, which predates
+it) scaled the architecture to 21.6M params (dim 512, 8 layers, 16
+heads, mlp 1536) and shipped it as payload `link_version: 3` —
+`model/url-model.bin`, int4 weights with per-64-column f16 scales,
+12.3MB. Full writeup: `CLAUDE.md`, `model/README.md`. Raw rows:
+`results.jsonl` (`v3-plain500`, `v3-kd500`, `v3-final`, `v3-qat8`,
+`v3-qat4`, `v3-qat4g`).
+
+### QAT quantization ladder (shared 3,995-URL eval, same set as above)
+
+| run | quantization | bits/char | size | status |
+|---|---|---|---|---|
+| v3-final | none (f16) | 1.7213 | 43.1MB | reference, not shipped as f16 |
+| **v3-qat8** | int8, per-channel | **1.7048** | **22.2MB** | **archived candidate — `candidates/url-model-int8.bin`** |
+| v3-qat4g | int4, group-64 | 1.8682 | 12.3MB | **shipped** as `model/url-model.bin` |
+| v3-qat4 | int4, per-channel | 1.9366 | 11.7MB | not shipped |
+
+int8 is the best-quality point on the ladder (1.705 bits/char,
+−61.2% vs classic on the 500-URL benchmark) but costs 2x the
+download of int4-group-64, so int4-group-64 shipped as the
+size/quality compromise. int8 is preserved in-repo as an archived
+candidate (`candidates/README.md`) in case a future WASM engine or
+weight-compression change makes its download cost acceptable — it
+would ship as a new payload version (4), never as a drop-in
+replacement for the current `link_version: 3` files.
