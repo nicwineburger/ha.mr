@@ -368,3 +368,107 @@ test("neural payloads require the model to decode", () => {
   assert.equal(new URL(decompressHybrid(payload, outputAlphabetASCII, model)).href,
     "https://www.example.com/x");
 });
+
+/*
+ * hamr-url-model-v3: quantized tensors (int8/int4 with per-row f16
+ * scales) dequantized at load, and the version-gated matmul4 kernel.
+ * These build a tiny synthetic v3 file in memory - real-model pinned
+ * vectors live above with the other versions.
+ */
+function buildTinyV3 () {
+  // f16 bit patterns for exactly-representable constants
+  const F16 = { "1": 0x3c00, "0.5": 0x3800, "0.25": 0x3400, "-0.5": 0xb800, "2": 0x4000 };
+  const dim = 4, mlp = 8, ctx = 6, vocabN = 5;
+  const qkvInts = Int8Array.from(
+    { length: 3 * dim * dim }, (_, i) => ((i * 37) % 255) - 127);
+  const projNibbles = Uint8Array.from(
+    { length: dim * dim }, (_, i) => (i * 7) % 16); // stored value+8
+  const upInts = Int8Array.from(
+    { length: mlp * dim }, (_, i) => ((i * 53) % 255) - 127);
+  const downNibbles = Uint8Array.from(
+    { length: dim * mlp }, (_, i) => (i * 11) % 16);
+
+  const tensors = [
+    { name: "embed", shape: [vocabN, dim] },
+    { name: "pos", shape: [ctx, dim] },
+    { name: "b0.norm1", shape: [dim] },
+    { name: "b0.qkv", shape: [3 * dim, dim], dtype: "int8" },
+    { name: "b0.proj", shape: [dim, dim], dtype: "int4" },
+    { name: "b0.norm2", shape: [dim] },
+    { name: "b0.up", shape: [mlp, dim], dtype: "int8" },
+    { name: "b0.down", shape: [dim, mlp], dtype: "int4" },
+    { name: "norm", shape: [dim] }
+  ];
+  const header = JSON.stringify({
+    format: "hamr-url-model-v3", vocab: vocabN, dim, layers: 1, heads: 2,
+    mlpDim: mlp, maxLen: ctx, linkVersion: 3, tokens: ["a", "b", "c", "d"],
+    tensors
+  });
+  const hb = new TextEncoder().encode(header);
+  const buf = new ArrayBuffer(4 + hb.length + 4096);
+  const view = new DataView(buf);
+  view.setUint32(0, hb.length, true);
+  new Uint8Array(buf, 4, hb.length).set(hb);
+  let o = 4 + hb.length;
+  const putF16 = (v) => { view.setUint16(o, F16[String(v)], true); o += 2; };
+  // embed + pos: alternating 1 / 0.5 / -0.5 / 0.25
+  const pattern = ["1", "0.5", "-0.5", "0.25"];
+  for (let i = 0; i < (vocabN + ctx) * dim; i ++) putF16(pattern[i % 4]);
+  for (let i = 0; i < dim; i ++) putF16("1");        // b0.norm1
+  for (let r = 0; r < 3 * dim; r ++) putF16("0.5");  // qkv scales
+  for (const q of qkvInts) { view.setInt8(o, q); o += 1; }
+  for (let r = 0; r < dim; r ++) putF16("0.25");     // proj scales
+  for (let b = 0; b < projNibbles.length; b += 2) {
+    view.setUint8(o, projNibbles[b] | (projNibbles[b + 1] << 4)); o += 1;
+  }
+  for (let i = 0; i < dim; i ++) putF16("1");        // b0.norm2
+  for (let r = 0; r < mlp; r ++) putF16("0.5");      // up scales
+  for (const q of upInts) { view.setInt8(o, q); o += 1; }
+  for (let r = 0; r < dim; r ++) putF16("2");        // down scales
+  for (let b = 0; b < downNibbles.length; b += 2) {
+    view.setUint8(o, downNibbles[b] | (downNibbles[b + 1] << 4)); o += 1;
+  }
+  for (let i = 0; i < dim; i ++) putF16("1");        // norm
+  return { buf, qkvInts, projNibbles, upInts, downNibbles };
+}
+
+test("v3 loader dequantizes int8 and int4 tensors exactly", () => {
+  const { buf, qkvInts, projNibbles, upInts, downNibbles } = buildTinyV3();
+  const m = new URLModel(buf);
+  assert.equal(m.linkVersion, 3);
+  assert.equal(m.fastKernels, true);
+  for (let i = 0; i < qkvInts.length; i ++) {
+    assert.equal(m.tensors["b0.qkv"][i], qkvInts[i] * 0.5, `qkv[${i}]`);
+  }
+  for (let i = 0; i < projNibbles.length; i ++) {
+    assert.equal(m.tensors["b0.proj"][i], (projNibbles[i] - 8) * 0.25,
+      `proj[${i}]`);
+  }
+  for (let i = 0; i < upInts.length; i ++) {
+    assert.equal(m.tensors["b0.up"][i], upInts[i] * 0.5, `up[${i}]`);
+  }
+  for (let i = 0; i < downNibbles.length; i ++) {
+    assert.equal(m.tensors["b0.down"][i], (downNibbles[i] - 8) * 2,
+      `down[${i}]`);
+  }
+  // f16 tensors load unchanged alongside quantized ones
+  assert.equal(m.tensors["embed"][0], 1);
+  assert.equal(m.tensors["embed"][1], 0.5);
+  assert.equal(m.tensors["embed"][2], -0.5);
+  assert.equal(m.tensors["embed"][3], 0.25);
+});
+
+test("v3 inference is deterministic and the v2 kernel is untouched", () => {
+  const { buf } = buildTinyV3();
+  const a = new URLModel(buf).session();
+  const b = new URLModel(buf).session();
+  for (const id of [0, 1, 3, 2, 4]) {
+    const la = a.feed(id);
+    const lb = b.feed(id);
+    assert.deepEqual(Array.from(la), Array.from(lb));
+  }
+  // Existing (v2) models must never take the fast kernel: its
+  // different summation order would break issued payloads
+  assert.equal(model.fastKernels, false);
+  assert.equal(modelV1.fastKernels, false);
+});
