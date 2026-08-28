@@ -56,8 +56,11 @@ check STRONG "surface elevation ladder token" \
   "--surface[23]\b|--bg-(secondary|tertiary)\b"
 check STRONG "accent/-dim paired badge tokens" \
   "--[a-z][a-z-]*-dim ?:"
+# Terminator required so a lift that ends the declaration matches but
+# a keyframe compound like "translateY(-2px) rotate(-4deg)" (a wobble
+# animation, not the hover-lift reflex) does not.
 check STRONG "hover lift translateY(-1/2/4px)" \
-  "translateY\(-(1|2|4)px\)"
+  "translateY\(-(1|2|4)px\) *[;}\"']"
 check STRONG "transition: all .2s/.15s" \
   "transition: ?all +0?\.(15|2)s"
 check STRONG "linear-gradient(135deg ...)" \
@@ -75,6 +78,8 @@ check WEAK "shortlist font" \
   "(family=|font-family[^;}]{0,80})(Inter|Geist|Space.?Grotesk|Outfit|Manrope|DM.?Sans|Sora|Plus.?Jakarta|Poppins|Bebas.?Neue|Barlow)\b"
 check WEAK "Lucide as reflex icon set" \
   "lucide"
+check WEAK "Tailwind gray-scale hex" \
+  "#(f9fafb|f3f4f6|e5e7eb|d1d5db|9ca3af|6b7280|4b5563|374151|1f2937)\b"
 check WEAK "hairline border on var(--border...)" \
   "1px solid var\(--border"
 check WEAK "backdrop-filter blur" \
