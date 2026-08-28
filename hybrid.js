@@ -19,6 +19,28 @@ import {
   payloadVersion
 } from "./neural.js";
 
+// The classic scheme's intentional normalizations, applied to both
+// sides of the round-trip comparison in compressHybrid so that only
+// real corruption differs: escapes of unreserved characters decode to
+// the literal, all other escape hex is uppercased, stray "%" becomes
+// "%25", valueless query parameters gain "=", and a bare trailing "?"
+// is dropped. Escapes of reserved characters deliberately stay
+// escapes - "%2F" and "/" are different URLs, and conflating them
+// would hide exactly the corruption this check exists to catch.
+const unreservedCharacter = /^[A-Za-z0-9\-_.!~*'()]$/;
+function comparableLink (link) {
+  const url = new URL(link);
+  url.search = url.search.replace(/=(?=&|$)/g, "");
+  let href = url.href;
+  if (url.search === "") href = href.replace(/\?(?=#|$)/, "");
+  return href
+    .replace(/%(?![0-9a-fA-F]{2})/g, "%25")
+    .replace(/%[0-9a-fA-F]{2}/g, (escape) => {
+      const char = String.fromCharCode(parseInt(escape.slice(1), 16));
+      return unreservedCharacter.test(char) ? char : escape.toUpperCase();
+    });
+}
+
 /**
  * Compresses the input link with the best available scheme.
  * @param {string} input Link to compress
@@ -56,7 +78,19 @@ export function compressHybrid (input, alphabet, model, options, engine = null) 
   let classicError = null;
   try {
     best = compressToNumber(input);
+    // The classic coder can't report an unrepresentable link - an
+    // encoder bug just yields a payload that decodes to a different
+    // URL. Verify the round-trip (up to the scheme's intentional
+    // normalizations) so a corrupt candidate is discarded instead of
+    // issued; the neural scheme, when available, still covers the link.
+    if (comparableLink(decompressNumber(best)) !== comparableLink(url.href)) {
+      best = null;
+      classicError = new Error("Classic encoding failed round-trip verification");
+    }
   } catch (e) {
+    // A decode so corrupt its URL doesn't parse lands here with best
+    // already assigned - discard it along with ordinary failures
+    best = null;
     classicError = e;
   }
   if (model) {

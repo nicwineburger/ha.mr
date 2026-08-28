@@ -37,6 +37,24 @@ test("links without a protocol are assumed to be http", () => {
   assert.equal(roundtrip("example.com/a/b?q=1"), "http://example.com/a/b?q=1");
 });
 
+test("intentional classic normalizations pass round-trip verification", () => {
+  // compressHybrid verifies that the classic payload decodes back to
+  // the input link; these differ as strings but only by the scheme's
+  // pinned normalizations, so they must not be rejected
+  const cases = [
+    ["https://example.com/%7Euser", "https://example.com/~user"],
+    ["https://example.com/a%2fb", "https://example.com/a%2Fb"],
+    ["https://example.com/?foo", "https://example.com?foo="],
+    ["https://example.com/?", "https://example.com"],
+    ["https://example.com/50%_off", "https://example.com/50%25_off"],
+    ["https://example.com/a b", "https://example.com/a%20b"],
+    ["https://EXAMPLE.COM/Path", "https://example.com/Path"]
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(roundtrip(input), expected, `hybrid round-trip of ${input}`);
+  }
+});
+
 test("ordinary links still round-trip through the hybrid path", () => {
   const links = [
     "https://example.com",
