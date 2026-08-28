@@ -218,10 +218,24 @@ export function compressToNumber (input) {
     pathSegments.push({ type: "path", value: "" });
   }
 
-  // Add search/query parameters to path segments
-  let queryParams = Array.from(url.searchParams)
-    .flat()
-    .map(c => ({ type: "query", value: c }));
+  // Add search/query parameters to path segments. The raw search
+  // string is split by hand: url.searchParams decodes values, which
+  // turns e.g. "a=x%26y" into a second "y" parameter on decode and
+  // rewrites "+" as "%20".
+  const queryParams = url.search
+    ? url.search.slice(1)
+      .split("&")
+      .flatMap(parameter => {
+        const separatorIndex = parameter.indexOf("=");
+        return separatorIndex === -1
+          ? [parameter, ""]
+          : [
+              parameter.slice(0, separatorIndex),
+              parameter.slice(separatorIndex + 1)
+            ];
+      })
+      .map(value => ({ type: "query", value }))
+    : [];
   pathSegments.push(...queryParams);
 
   // Add hash value to path segments
