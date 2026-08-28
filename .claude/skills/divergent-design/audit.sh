@@ -49,7 +49,9 @@ check STRONG "stock palette hex (Tailwind 300-500)" \
 check STRONG "the #667eea->#764ba2 gradient pair" \
   "#(667eea|764ba2)\b"
 check STRONG "default tinted near-black background" \
-  "#(0a0a0a|0d0d0d|07070d|0a0a0f|0b0b10|0f0f14|16161d|0f172a|111827|1a1a2e|0e0e1c|13132a|191930)\b"
+  "#(0a0a0a|0d0d0d|07070d|0a0a0f|0b0b10|0f0f14|16161d|0f172a|111827|1a1a2e|0e0e1c|13132a|191930|09090b|18181b)\b"
+check STRONG "shadcn default theme token (unedited)" \
+  "oklch\(0\.(145|985) 0 0\)|240 10% 3\.9%|--radius: ?0\.(5|625)rem|hsl\(var\(--"
 check STRONG "surface elevation ladder token" \
   "--surface[23]\b|--bg-(secondary|tertiary)\b"
 check STRONG "accent/-dim paired badge tokens" \
@@ -70,7 +72,9 @@ check STRONG "emoji-in-SVG data-URI favicon" \
   "data:image/svg\+xml[^\"']{0,200}(<text|%3Ctext)"
 
 check WEAK "shortlist font" \
-  "(family=|font-family[^;}]{0,80})(Inter|Space.?Grotesk|Outfit|Manrope|DM.?Sans|Sora|Plus.?Jakarta|Poppins|Bebas.?Neue|Barlow)\b"
+  "(family=|font-family[^;}]{0,80})(Inter|Geist|Space.?Grotesk|Outfit|Manrope|DM.?Sans|Sora|Plus.?Jakarta|Poppins|Bebas.?Neue|Barlow)\b"
+check WEAK "Lucide as reflex icon set" \
+  "lucide"
 check WEAK "hairline border on var(--border...)" \
   "1px solid var\(--border"
 check WEAK "backdrop-filter blur" \

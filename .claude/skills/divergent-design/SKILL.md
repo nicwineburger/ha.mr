@@ -19,6 +19,18 @@ writing any CSS. Consistency *within* a project is good design; keep
 it. Sameness *across* projects is the fingerprint; that's what this
 kills.
 
+Why the convergence exists (so the fix targets the mechanism): the
+generation toolchain shares defaults before any design decision is
+made — shadcn/ui components, Tailwind values, Inter/Geist type,
+Lucide icons are what v0/Lovable-era training data is full of, and
+each generation round feeds the next model's corpus. Two practical
+consequences. First, the blocklist includes shadcn's *default theme
+tokens verbatim* — their presence means the theme was inherited, not
+chosen. Second, iteration re-converges: each revision optimizes from
+the model's own previous output, drifting back toward the default a
+little per round. The stance block is the anchor — every revision
+diffs against the stance, never against the previous output's look.
+
 ## Procedure — derive, commit, execute, audit
 
 **1. Name the subject's native visual world.** Before thinking about
@@ -78,6 +90,12 @@ Banned as *reflexes*, not as techniques — see the escape hatch below.
   palette almost never lands on them exactly. Specify color in
   `oklch()` or from sampled sources — it also breaks the habit at the
   syntax level.
+- **shadcn default theme leakage.** `oklch(0.145 0 0)` /
+  `oklch(0.985 0 0)`, the HSL triplet `240 10% 3.9%`,
+  `--radius: 0.5rem`/`0.625rem`, `hsl(var(--…))` wiring, zinc greys
+  (`#09090b`, `#18181b`). These are the *unedited installer output* of
+  the ecosystem's default component library — the strongest possible
+  signal that no theme decision was ever made.
 - **Tinted near-black by default.** `#0a0a0a`, `#0d0d0d`, `#07070d`,
   `#0f172a`, `#1a1a2e` and kin. If dark is right for the subject, pick
   a *chromatic* dark from the world (ink blue, oxblood, bottle green,
@@ -98,13 +116,14 @@ Banned as *reflexes*, not as techniques — see the escape hatch below.
 - **The gradient habits.** `linear-gradient(135deg …)` backgrounds,
   gradient-filled hero text via `background-clip: text`, low-opacity
   radial "glow blobs".
-- **The font shortlist.** Inter, Space Grotesk, Outfit, Manrope,
-  DM Sans, Sora, Plus Jakarta Sans, Poppins, Bebas Neue + Barlow.
-  Weak signal alone — humans use these too — but combined with the
-  above it completes the picture. TYPE must say why a face belongs to
-  *this* subject; "clean and modern" is not a reason.
+- **The font shortlist.** Inter, Geist, Space Grotesk, Outfit,
+  Manrope, DM Sans, Sora, Plus Jakarta Sans, Poppins, Bebas Neue +
+  Barlow. Weak signal alone — humans use these too — but combined
+  with the above it completes the picture. TYPE must say why a face
+  belongs to *this* subject; "clean and modern" is not a reason.
 - **Misc tells.** Emoji-in-SVG data-URI favicons; `backdrop-filter`
-  blurred sticky headers; `box-shadow: 0 4px 12px rgba(0,0,0,…)`
+  blurred sticky headers over glass panels; bento-grid hero sections;
+  Lucide as the reflex icon set; `box-shadow: 0 4px 12px rgba(0,0,0,…)`
   card shadows; the centered max-width column of stat tiles.
 
 ## Escape hatch
