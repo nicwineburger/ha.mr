@@ -42,7 +42,12 @@ const exactCases = [
   "https://example.com/a/b/c/",
   "https://example.com/docs/?a=b",
   "https://example.com/docs/#frag",
-  "https://xn--nxasmq6b.example/x"
+  "https://xn--nxasmq6b.example/x",
+  // Segments containing "/" (SPA routes, URL-valued params) fit no
+  // subalphabet and must fall back to Huffman coding
+  "https://example.com#/route/home",
+  "https://example.com/x?next=/a/b",
+  "https://example.com/app#/x/y?z=1"
 ];
 
 for (const [name, alphabet] of Object.entries(alphabets)) {
