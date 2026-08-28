@@ -35,6 +35,20 @@ import {
  * @returns {string} Output payload (not a full link!)
  */
 export function compressHybrid (input, alphabet, model, options, engine = null) {
+  // Neither scheme can represent non-http(s) protocols or credentials,
+  // and each mangles them differently (the classic coder rewrites the
+  // protocol and drops credentials; the neural coder keeps credentials
+  // the classic one drops). Reject such input up front rather than
+  // issue a link that points somewhere else. A missing protocol is
+  // tolerated - both schemes already assume "http://" for it.
+  const hasProtocol = /^\w+:\/\//.test(input);
+  const url = new URL(hasProtocol ? input : "http://" + input);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`Unsupported protocol "${url.protocol}" - only http and https links can be encoded`);
+  }
+  if (url.username || url.password) {
+    throw new Error("Credentials in links are not supported");
+  }
   // Either scheme may fail where the other succeeds (e.g. the classic
   // domain dictionary can't encode hostnames containing "_", which
   // are invalid DNS but do occur in the wild) - only fail if both do.
