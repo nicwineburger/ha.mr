@@ -47,7 +47,12 @@ const exactCases = [
   // subalphabet and must fall back to Huffman coding
   "https://example.com#/route/home",
   "https://example.com/x?next=/a/b",
-  "https://example.com/app#/x/y?z=1"
+  "https://example.com/app#/x/y?z=1",
+  // Escapes of reserved characters pass through verbatim - decoding
+  // them would change which URL the link points to
+  "https://example.com/a%2Fb",
+  "https://example.com/a%3Ab/c",
+  "https://example.com/v1%2Bjson"
 ];
 
 for (const [name, alphabet] of Object.entries(alphabets)) {
@@ -82,6 +87,8 @@ const normalizedCases = [
   ["https://example.com/100%", "https://example.com/100%25"],
   // Hex-valid escape that isn't valid UTF-8 survives verbatim
   ["https://example.com/a%C3z", "https://example.com/a%C3z"],
+  // Reserved-character escape hex is uppercased, not decoded
+  ["https://example.com/a%2fb", "https://example.com/a%2Fb"],
   // Hostname is lowercased
   ["https://EXAMPLE.COM/Path", "https://example.com/Path"],
   // Square brackets are percent-encoded (they're reserved for IPv6 hosts)

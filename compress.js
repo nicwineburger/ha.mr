@@ -229,24 +229,39 @@ export function compressToNumber (input) {
     pathSegments.push({ type: "hash", value: url.hash.slice(1) });
   }
 
-  // Normalize path segment encoding
-  for (const segment of pathSegments) {
-    // Escape stray "%" characters that aren't part of a valid escape
-    // sequence - browsers tolerate them, but decodeURI throws
-    segment.value = segment.value.replace(/%(?![0-9a-fA-F]{2})/g, "%25");
+  // Escapes of reserved characters (#$&+,/:;=?@) can't be normalized:
+  // decodeURI leaves them as literal "%XX" text, so encodeURI would
+  // double-encode the "%" and change which URL the link points to.
+  // They pass through verbatim (hex uppercased to match the decoder).
+  const reservedEscape = /(%(?:23|24|26|2B|2C|2F|3A|3B|3D|3F|40))/gi;
+
+  function normalizeSegmentPart (part) {
     try {
-      segment.value = encodeURI(decodeURI(segment.value));
+      return encodeURI(decodeURI(part));
     } catch (e) {
       // Hex-valid escapes that don't form valid UTF-8 (e.g. a lone
       // "%C3") also throw. Keep those escapes verbatim and normalize
       // only the literal characters between them.
-      segment.value = segment.value
+      return part
         .split(/(%[0-9a-fA-F]{2})/)
-        .map(part => /^%[0-9a-fA-F]{2}$/.test(part)
-          ? part.toUpperCase()
-          : encodeURI(part))
+        .map(piece => /^%[0-9a-fA-F]{2}$/.test(piece)
+          ? piece.toUpperCase()
+          : encodeURI(piece))
         .join("");
     }
+  }
+
+  // Normalize path segment encoding, preserving escaped reserved characters
+  for (const segment of pathSegments) {
+    // Escape stray "%" characters that aren't part of a valid escape
+    // sequence - browsers tolerate them, but decodeURI throws
+    segment.value = segment.value.replace(/%(?![0-9a-fA-F]{2})/g, "%25");
+    segment.value = segment.value
+      .split(reservedEscape)
+      .map((part, index) => index % 2 === 1
+        ? part.toUpperCase()
+        : normalizeSegmentPart(part))
+      .join("");
   }
 
   // Encode path following domain segment-by-segment, using best algorithm for each
