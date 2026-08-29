@@ -101,6 +101,24 @@ const outputRatioElement = document.querySelector("#output-ratio");
 const queryWarningElement = document.querySelector("#query-warning");
 const cleanNoteElement = document.querySelector("#clean-note");
 
+const redirectContainerElement = document.querySelector("#redirect-container");
+const redirectLinkElement = document.querySelector("#redirect-link");
+document.querySelector("#redirect-button").addEventListener("click",
+  () => redirectLinkElement.click());
+
+/**
+ * Shows the decoded destination and waits for the user to confirm -
+ * a short link hides where it points until this moment, so it never
+ * navigates without showing the target first.
+ * @param {string} target Decoded destination link
+ */
+function showRedirectPrompt (target) {
+  redirectLinkElement.textContent = target;
+  redirectLinkElement.href = target;
+  document.querySelector("#loader").style.display = "none";
+  redirectContainerElement.style.display = "flex";
+}
+
 const qrCodeImage = document.querySelector("#qrcode");
 const qrCodeCorrectionLevelContainer = document.querySelector("#qr-correct-level-container");
 const qrCodeCorrectionLevelElement = document.querySelector("#qr-correct-level");
@@ -347,7 +365,7 @@ inputLinkElement.addEventListener("input", () => {
         }
       }
       const target = decompressHybrid(payload, alphabet, decodeModel, decodeEngine);
-      window.location.href = target;
+      showRedirectPrompt(target);
       return;
     } catch (e) {
       console.warn(`Redirect failed. Could not decode input.`);
