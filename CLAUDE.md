@@ -3,7 +3,7 @@
 ha.mr compresses links and QR codes entirely client-side — no backend,
 no database. The compressed payload lives inside the short link itself
 (`https://ha.mr#<payload>`, or `HTTP://HA.MR/<payload>` for QR codes,
-decoded by `404.html`). Deployed on GitHub Pages from the repo root.
+decoded by `404.html`). Deployed on GitHub Pages from the `docs/` folder.
 
 ## Architecture
 
@@ -18,7 +18,7 @@ decoded by `404.html`). Deployed on GitHub Pages from the repo root.
   wins. A unary version field in the payload records the choice:
   version 0 = classic, version N>=1 = the model whose `linkVersion`
   is N.
-- **Models** live in `model/`: `url-model.bin` is the latest
+- **Models** live in `docs/model/`: `url-model.bin` is the latest
   (currently linkVersion 3, 21.6M params, int4 weights with per-group
   f16 scales, 12.3MB); `url-model-v1.bin` and `url-model-v2.bin` are
   archived and lazy-loaded only when an old link is opened. CLI:
@@ -26,11 +26,11 @@ decoded by `404.html`). Deployed on GitHub Pages from the repo root.
   longer than the context window (in-band EOS restarts the context),
   so the neural path covers arbitrarily long URLs.
 - **Inference engine**: `engine-select.js` picks the WASM engine
-  (`wasm/engine.wasm`, ~3x faster) when the runtime can load it,
+  (`docs/wasm/engine.wasm`, ~3x faster) when the runtime can load it,
   falling back automatically and silently to the plain-JS engine
   (`neural.js`) otherwise — every production entry point (`main.js`,
   `standalone.js`, the 404 decode path) goes through it. Payloads are
-  bit-identical either way (see invariant 1 and `wasm/README.md`);
+  bit-identical either way (see invariant 1 and `docs/wasm/README.md`);
   this only ever changes speed, never a link's contents.
 
 ## Critical invariants — breaking these breaks issued links
@@ -52,15 +52,15 @@ decoded by `404.html`). Deployed on GitHub Pages from the repo root.
 
    **What's frozen is the bit-identical PROBABILITIES, not the choice
    of engine that computes them.** A second inference engine (the
-   production WASM engine, `wasm/engine.c` + `wasm/engine.js`, is one)
+   production WASM engine, `docs/wasm/engine.c` + `docs/wasm/engine.js`, is one)
    is permitted ONLY as a faithful op-for-op transcription of
    `neural.js` — same operations, same order, no libm, no
    `-ffast-math`, no reassociation, no FMA — verified byte-identical
    against `neural.js` on every pinned vector in `test/neural.test.mjs`
-   in BOTH Node and headless Chromium (the `wasm/` acceptance sweep:
-   `wasm/wasm.test.mjs` in `npm test`, `wasm/verify.mjs` +
-   `wasm/verify-browser.mjs` as the full sweep required before any
-   `engine.wasm` rebuild is committed — see `wasm/README.md`).
+   in BOTH Node and headless Chromium (the `docs/wasm/` acceptance sweep:
+   `docs/wasm/wasm.test.mjs` in `npm test`, `docs/wasm/verify.mjs` +
+   `docs/wasm/verify-browser.mjs` as the full sweep required before any
+   `engine.wasm` rebuild is committed — see `docs/wasm/README.md`).
    `neural.js` remains the reference implementation forever: every
    acceptance check treats it as ground truth, and every production
    entry point (`main.js`, `standalone.js`, the 404 decode path)
@@ -73,11 +73,11 @@ decoded by `404.html`). Deployed on GitHub Pages from the repo root.
    outright — its floating-point reduction order isn't controllable,
    so no transcription of it could meet the byte-identical bar.
 2. **Model files are compatibility surfaces.** Never overwrite
-   `model/url-model.bin` in place. Upgrades: train with the next
+   `docs/model/url-model.bin` in place. Upgrades: train with the next
    `link_version`, archive the current file as `url-model-v<N>.bin`,
    ship the new one as `url-model.bin`, add new pinned vectors, keep
    every old version's vectors green forever. Procedure in
-   `model/README.md`.
+   `docs/model/README.md`.
 3. **Pinned vectors** in `test/neural.test.mjs` come in two kinds.
    *Decode vectors* (payload → URL) freeze compatibility with issued
    links; they are NEVER touched — if one fails, you changed decode
@@ -105,19 +105,19 @@ decoded by `404.html`). Deployed on GitHub Pages from the repo root.
   failing). CI also diffs `index.html`/`404.html`. The v3 model and
   the WASM acceptance checks make the suite take about 8 minutes of
   CPU.
-- `node model/benchmark.mjs <urls-file> [limit]` — real-coder
+- `node docs/model/benchmark.mjs <urls-file> [limit]` — real-coder
   benchmark vs classic, verifies every round-trip.
-- CPU experiments: `model/harness/` (see its README; config-driven,
+- CPU experiments: `docs/model/harness/` (see its README; config-driven,
   seeded, `fetch-data.sh` builds the corpus).
-- GPU experiments: `model/harness/gpu/` on Modal (needs
+- GPU experiments: `docs/model/harness/gpu/` on Modal (needs
   `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` env vars — set in the "Modal"
   Claude environment, never committed). Corpus + checkpoints live on
   the Modal volume `hamr-gpu`.
 
 ## What's been established (don't re-derive)
 
-Full results: `model/harness/README.md` (CPU campaign) and
-`model/harness/gpu/RESULTS.md` (GPU campaign). Headlines:
+Full results: `docs/model/harness/README.md` (CPU campaign) and
+`docs/model/harness/gpu/RESULTS.md` (GPU campaign). Headlines:
 
 - v2 model: **−51.8% vs classic** on 1,000 held-out URLs (v1: −39.0%
   on the same set). Data at fixed size was the win: 16× corpus, 40×
@@ -130,7 +130,7 @@ Full results: `model/harness/README.md` (CPU campaign) and
   capacity was the binding constraint) but is **decisive at 21.6M**
   (2.144 vs 2.235 bits/char at the 500M screening budget) — the v3
   model is distilled from the archived 71.7M teacher
-  (1.5693 bits/char, `model/harness/gpu/teacher/`).
+  (1.5693 bits/char, `docs/model/harness/gpu/teacher/`).
 - **QAT quantization ladder at 21.6M** (shared eval bits/char):
   fp16 1.721, int8 1.705 (22.2MB), int4 group-64 1.868 (12.3MB),
   int4 per-channel 1.937 (11.7MB). int8 reaches −61% vs classic but
@@ -138,7 +138,7 @@ Full results: `model/harness/README.md` (CPU campaign) and
 - Estimated entropy floor of the URL distribution: ~1.2–1.4
   bits/char; the 71.7M teacher (1.57) approaches it.
 - **Transform-unwrapping is a dead end with this model**
-  (`model/harness/transforms/REPORT.md`): only 2.13% of URLs carry
+  (`docs/model/harness/transforms/REPORT.md`): only 2.13% of URLs carry
   decodable substructure, ~96% of detections lose after tree
   overhead, and the model already codes percent/base64 spans as seen
   in training (unwrapped JSON costs MORE). Corpus gain +0.23% vs

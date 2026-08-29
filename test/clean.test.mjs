@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanLink } from "../clean.js";
+import { cleanLink } from "../docs/clean.js";
 
 test("strips utm_* parameters", () => {
   const { cleaned, removed } = cleanLink(

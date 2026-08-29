@@ -10,10 +10,10 @@ Every link is compressed with two schemes, and the smaller payload wins (a versi
 3. The rest of the link is split into parts, and each segment is either fitted to a predefined character set, or Huffman coded.
 
 ### Neural scheme
-A ~4MB tokenized transformer (see [`model/README.md`](model/README.md)) predicts each token of the link, and an arithmetic coder turns those predictions into near-optimal bits. On held-out URLs this cuts payloads roughly in half compared to the classic scheme alone; the winning model configuration was chosen by a controlled experiment campaign ([`model/harness/README.md`](model/harness/README.md)). Inference is restricted to IEEE correctly-rounded operations, so encoding and decoding are bit-identical on every browser, platform, and engine. The model ships with the site as a static file — any fork hosts it automatically. If it fails to load, everything falls back to the classic scheme.
+A ~4MB tokenized transformer (see [`docs/model/README.md`](docs/model/README.md)) predicts each token of the link, and an arithmetic coder turns those predictions into near-optimal bits. On held-out URLs this cuts payloads roughly in half compared to the classic scheme alone; the winning model configuration was chosen by a controlled experiment campaign ([`docs/model/harness/README.md`](docs/model/harness/README.md)). Inference is restricted to IEEE correctly-rounded operations, so encoding and decoding are bit-identical on every browser, platform, and engine. The model ships with the site as a static file — any fork hosts it automatically. If it fails to load, everything falls back to the classic scheme.
 
 #### Inference engine
-Inference runs on one of two interchangeable engines, chosen automatically by `engine-select.js`: a WebAssembly engine (`wasm/`, ~3x faster) when the runtime can load it, or a ~200-line dependency-free JavaScript engine (`neural.js`) otherwise — a browser without WebAssembly/SIMD128, or a failed fetch/instantiate, falls back silently and per model load. `neural.js` is the reference implementation forever: the WASM engine is a faithful, op-for-op transcription of it, verified byte-identical on every pinned link in Node and headless Chromium before it ships (see [`wasm/README.md`](wasm/README.md)). Either engine produces the exact same payload for the same link, so the choice is purely a performance decision.
+Inference runs on one of two interchangeable engines, chosen automatically by `engine-select.js`: a WebAssembly engine (`docs/wasm/`, ~3x faster) when the runtime can load it, or a ~200-line dependency-free JavaScript engine (`neural.js`) otherwise — a browser without WebAssembly/SIMD128, or a failed fetch/instantiate, falls back silently and per model load. `neural.js` is the reference implementation forever: the WASM engine is a faithful, op-for-op transcription of it, verified byte-identical on every pinned link in Node and headless Chromium before it ships (see [`docs/wasm/README.md`](docs/wasm/README.md)). Either engine produces the exact same payload for the same link, so the choice is purely a performance decision.
 
 ### Output
 - For links, the output is encoded in the full character set of a URL. (I've been informed that square brackets `[]` are not supposed to be a part of this set, but it's too late to change that now.)
@@ -34,8 +34,8 @@ Opening either link decodes the payload in your browser and redirects — no ser
 With [Node.js](https://nodejs.org) installed:
 
 ```sh
-node standalone.js <link> [ascii|qr|emoji]   # compress a link
-node standalone.js "https://ha.mr#..."        # decode a compressed link
+node docs/standalone.js <link> [ascii|qr|emoji]   # compress a link
+node docs/standalone.js "https://ha.mr#..."        # decode a compressed link
 ```
 
 Or install it as a global `hamr` command with `npm install -g .`.
@@ -44,7 +44,7 @@ Or install it as a global `hamr` command with `npm install -g .`.
 Both the website ("Strip tracking parameters" checkbox) and the CLI (`--clean` flag) can strip known tracking query parameters before compressing:
 
 ```sh
-node standalone.js --clean "https://example.com/page?utm_source=news&id=5"
+node docs/standalone.js --clean "https://example.com/page?utm_source=news&id=5"
 # stderr: cleaned: removed utm_source
 ```
 
@@ -63,12 +63,12 @@ To run your own instance:
 2. Replace the contents of `CNAME` with your own domain, or delete the file if you're not using a custom domain.
 3. Serve the site from the **root** of the domain. Text links (`https://your.domain#...`) work from any path, but QR-code links carry their payload in the URL path and rely on the `404.html` fallback at the domain root to decode them.
 
-Links are only decodable by a deployment of this codebase, but they are not tied to the domain that created them: the payload format is identical everywhere, so a link's path/fragment can be decoded by any instance (or by the CLI). The one caveat is the neural model: a neural payload can only be decoded by the model version that encoded it, so keep the `model/url-model*.bin` files as they are. Retrained models are an *additive* upgrade — the payload format is versioned, and old model files stay deployed to serve old links (see [`model/README.md`](model/README.md) for the exact procedure).
+Links are only decodable by a deployment of this codebase, but they are not tied to the domain that created them: the payload format is identical everywhere, so a link's path/fragment can be decoded by any instance (or by the CLI). The one caveat is the neural model: a neural payload can only be decoded by the model version that encoded it, so keep the `docs/model/url-model*.bin` files as they are. Retrained models are an *additive* upgrade — the payload format is versioned, and old model files stay deployed to serve old links (see [`docs/model/README.md`](docs/model/README.md) for the exact procedure).
 
 For the command line tool, set the `HAMR_DOMAIN` environment variable to build and recognize short links on your domain:
 
 ```sh
-HAMR_DOMAIN=your.domain node standalone.js "https://some-long.link/"
+HAMR_DOMAIN=your.domain node docs/standalone.js "https://some-long.link/"
 ```
 
 ## Known normalizations

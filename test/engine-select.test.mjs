@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { URLModel, neuralDecompressNumber } from "../neural.js";
-import { selectEngine, wasmModuleSource } from "../engine-select.js";
-import { compressHybrid, decompressHybrid } from "../hybrid.js";
-import { outputAlphabetASCII } from "../alphabets.js";
+import { URLModel, neuralDecompressNumber } from "../docs/neural.js";
+import { selectEngine, wasmModuleSource } from "../docs/engine-select.js";
+import { compressHybrid, decompressHybrid } from "../docs/hybrid.js";
+import { outputAlphabetASCII } from "../docs/alphabets.js";
 
 /*
  * Engine selection tests: WASM is the default production engine in
@@ -22,9 +22,9 @@ import { outputAlphabetASCII } from "../alphabets.js";
  */
 
 const model = new URLModel(
-  (await readFile(new URL("../model/url-model.bin", import.meta.url))).buffer);
+  (await readFile(new URL("../docs/model/url-model.bin", import.meta.url))).buffer);
 const wasmSource = wasmModuleSource(
-  readFile(new URL("../wasm/engine.wasm", import.meta.url)));
+  readFile(new URL("../docs/wasm/engine.wasm", import.meta.url)));
 
 const links = [
   "https://www.example.com/some/path?a=1&b=2",

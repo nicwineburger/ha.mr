@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { compressHybrid, decompressHybrid } from "../hybrid.js";
-import { outputAlphabetASCII } from "../alphabets.js";
+import { compressHybrid, decompressHybrid } from "../docs/hybrid.js";
+import { outputAlphabetASCII } from "../docs/alphabets.js";
 
 // These tests run classic-only (model = null): they cover hybrid.js's
 // own input handling, which is independent of the neural scheme.
