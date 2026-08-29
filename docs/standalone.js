@@ -42,8 +42,19 @@ try {
 }
 
 // The domain used to build and recognize short links; set HAMR_DOMAIN
-// to use a self-hosted deployment (defaults to the original site)
-const domain = (process.env.HAMR_DOMAIN || "ha.mr").toLowerCase();
+// to use a self-hosted deployment (defaults to the original site).
+// A deployment under a base path includes it, e.g.
+// HAMR_DOMAIN=user.github.io/ha.mr - the host part is lowercased, the
+// path part is kept verbatim (it's case-sensitive on the server).
+const domainInput = process.env.HAMR_DOMAIN || "ha.mr";
+const domainPathIndex = domainInput.indexOf("/");
+const domainHost = (domainPathIndex === -1
+  ? domainInput
+  : domainInput.slice(0, domainPathIndex)).toLowerCase();
+const domainPath = domainPathIndex === -1
+  ? ""
+  : domainInput.slice(domainPathIndex).replace(/\/+$/, "");
+const domain = domainHost + domainPath;
 
 // "--clean" may appear anywhere in argv; the remaining arguments keep
 // their positional meaning
@@ -64,7 +75,9 @@ if (!input) {
 let payload = "";
 const inputLower = input.toLowerCase();
 for (const prefix of [`https://${domain}`, `http://${domain}`, domain]) {
-  if (inputLower.startsWith(prefix)) {
+  // Recognition is case-insensitive (the payload separator check
+  // below decides whether it's really a short link)
+  if (inputLower.startsWith(prefix.toLowerCase())) {
     const rest = input.slice(prefix.length);
     // Only treat this as a short link if a payload separator follows,
     // so e.g. "ha.mrs.example" still compresses as a regular link
@@ -121,7 +134,9 @@ else if (alphabetName !== "ascii") {
 }
 
 if (alphabetName === "qr") {
-  console.log(`HTTP://${domain.toUpperCase()}/` + compressHybrid(link, alphabet, model, undefined, engine));
+  // Uppercase host keeps the QR code in alphanumeric mode; a base
+  // path is case-sensitive on the server, so it stays verbatim
+  console.log(`HTTP://${domainHost.toUpperCase()}${domainPath}/` + compressHybrid(link, alphabet, model, undefined, engine));
 } else {
   console.log(`https://${domain}#` + compressHybrid(link, alphabet, model, undefined, engine));
 }

@@ -7,10 +7,16 @@ decoded by `404.html`). Deployed on GitHub Pages from the `docs/` folder.
 
 ## Architecture
 
-- **Zero-build static site.** No bundler, no framework. `index.html`
-  and `404.html` MUST stay byte-identical (CI enforces this; QR links
-  depend on it). Serve from the domain root; the site is
-  domain-portable (links/branding derive from `location`).
+- **Zero-build static site.** No bundler, no framework.
+  `docs/index.html` and `docs/404.html` MUST stay byte-identical (CI
+  enforces this; QR links depend on it). Serve `docs/` from a domain
+  root or under a base path (e.g. a GitHub Pages project site); the
+  site is deployment-portable - links/branding derive from `location`
+  plus the base path. `main.js` reads the base exactly from
+  `import.meta.url`; the HTML bootstrap infers it from the pathname,
+  which requires each base directory name to contain a character
+  outside the uppercase QR alphabet (a lowercase letter qualifies) so
+  base and QR payload segments can be told apart.
 - **Hybrid compression** (`hybrid.js`): every link is encoded with the
   classic scheme (`compress.js`: Huffman dictionaries + subalphabets)
   and the neural scheme (`neural.js`: tiny transformer driving the

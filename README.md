@@ -59,9 +59,9 @@ npm test
 The site is fully portable: nothing about the compression or the UI is tied to the `ha.mr` domain. Output links, QR codes, and the displayed title all adapt to whatever domain the site is served from.
 
 To run your own instance:
-1. Fork this repository and enable GitHub Pages (or copy the files to any static web host).
-2. Replace the contents of `CNAME` with your own domain, or delete the file if you're not using a custom domain.
-3. Serve the site from the **root** of the domain. Text links (`https://your.domain#...`) work from any path, but QR-code links carry their payload in the URL path and rely on the `404.html` fallback at the domain root to decode them.
+1. Fork this repository and enable GitHub Pages: Settings → Pages → deploy from a branch, folder `/docs` (or copy the `docs/` folder to any static web host).
+2. Optionally add a `CNAME` file inside `docs/` for a custom domain.
+3. Serving from a domain root and from a base path (like a GitHub Pages *project* site at `user.github.io/repo/`) both work — links, QR codes, and branding pick up the base path automatically. QR-code links carry their payload in the URL path and rely on the `404.html` fallback to decode them; for the site to tell base path from payload, each base path directory name must contain at least one character outside the uppercase QR alphabet (`$*+-./:`, digits, `A-Z`) — any lowercase letter qualifies, so a typical repository name just works.
 
 Links are only decodable by a deployment of this codebase, but they are not tied to the domain that created them: the payload format is identical everywhere, so a link's path/fragment can be decoded by any instance (or by the CLI). The one caveat is the neural model: a neural payload can only be decoded by the model version that encoded it, so keep the `docs/model/url-model*.bin` files as they are. Retrained models are an *additive* upgrade — the payload format is versioned, and old model files stay deployed to serve old links (see [`docs/model/README.md`](docs/model/README.md) for the exact procedure).
 
@@ -70,6 +70,8 @@ For the command line tool, set the `HAMR_DOMAIN` environment variable to build a
 ```sh
 HAMR_DOMAIN=your.domain node docs/standalone.js "https://some-long.link/"
 ```
+
+A deployment under a base path includes it: `HAMR_DOMAIN=user.github.io/repo`.
 
 ## Known normalizations
 The compressor reproduces links exactly in the common case, but a few equivalent spellings are normalized (see `test/roundtrip.test.mjs` for the pinned-down list):
