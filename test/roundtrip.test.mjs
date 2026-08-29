@@ -59,7 +59,13 @@ const exactCases = [
   "https://example.com/x?q=b+c",
   "https://example.com/x?a=b=c",
   "https://example.com/x?redirect=https%3A%2F%2Fother.example%2Fpath",
-  "https://example.com/a+b?q=c+d"
+  "https://example.com/a+b?q=c+d",
+  // IPv6 hosts encode as an END marker followed by the 128-bit
+  // address - a format extension no pre-IPv6 payload can collide with
+  "http://[2001:db8::1]/x",
+  "https://[::1]:8443/a?q=1#h",
+  "https://[2001:db8::1:0:0:1]/deep/path",
+  "https://[::]/x"
 ];
 
 for (const [name, alphabet] of Object.entries(alphabets)) {
@@ -99,7 +105,10 @@ const normalizedCases = [
   // Hostname is lowercased
   ["https://EXAMPLE.COM/Path", "https://example.com/Path"],
   // Square brackets are percent-encoded (they're reserved for IPv6 hosts)
-  ["https://example.com/a[b]c", "https://example.com/a%5Bb%5Dc"]
+  ["https://example.com/a[b]c", "https://example.com/a%5Bb%5Dc"],
+  // IPv6 addresses take the URL parser's canonical form (RFC 5952)
+  ["http://[2001:0DB8::0:1]/x", "http://[2001:db8::1]/x"],
+  ["http://[::ffff:192.0.2.1]/x", "http://[::ffff:c000:201]/x"]
 ];
 
 test("intentional normalizations (ascii)", () => {
