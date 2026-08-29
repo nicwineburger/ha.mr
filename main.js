@@ -104,7 +104,49 @@ const cleanNoteElement = document.querySelector("#clean-note");
 const qrCodeImage = document.querySelector("#qrcode");
 const qrCodeCorrectionLevelContainer = document.querySelector("#qr-correct-level-container");
 const qrCodeCorrectionLevelElement = document.querySelector("#qr-correct-level");
-qrCodeCorrectionLevelElement.addEventListener("change", updateOutput);
+
+// The error correction level is picked automatically per link until
+// the user touches the slider; typing a new link hands control back
+let qrCorrectionManuallySet = false;
+
+qrCodeCorrectionLevelElement.addEventListener("change", () => {
+  qrCorrectionManuallySet = true;
+  updateOutput();
+});
+
+/**
+ * Picks the strongest error correction level that doesn't grow the QR
+ * code: robustness within the version the payload needs anyway.
+ * @param {string} text Full QR code contents
+ * @returns {string} Error correction level ("M", "Q" or "H")
+ */
+function getOptimalErrorCorrectionLevel (text) {
+  const levels = ["M", "Q", "H"];
+
+  const baseVersion = QRCode.create(text, {
+    errorCorrectionLevel: levels[0]
+  }).version;
+
+  let optimalLevel = levels[0];
+
+  for (const level of levels.slice(1)) {
+    try {
+      const candidate = QRCode.create(text, {
+        errorCorrectionLevel: level
+      });
+
+      if (candidate.version > baseVersion) {
+        break;
+      }
+
+      optimalLevel = level;
+    } catch {
+      break;
+    }
+  }
+
+  return optimalLevel;
+}
 
 /**
  * Neural encoding takes a few hundred milliseconds, too slow to run on
@@ -212,12 +254,17 @@ function renderOutput (activeModel, neuralOptions) {
     outputLinkElement.href = `${siteOrigin}#${output}`;
     outputLinkElement.style.color = "";
     if (settings.qr) {
-      const errorCorrection = ["L", "M", "Q", "H"][qrCodeCorrectionLevelElement.value];
+      const correctionLevels = ["L", "M", "Q", "H"];
       qrCodeImage.style.display = "inline";
       qrCodeCorrectionLevelContainer.style.display = "inline";
       // Uppercase keeps the QR code in alphanumeric mode; hostnames
       // only contain [a-z0-9.-], which all fit that character set
       let qrCodeLink = `HTTP://${siteHost.toUpperCase()}/${hybridPayload(input, outputAlphabetQR, activeModel, neuralOptions)}`;
+      if (!qrCorrectionManuallySet) {
+        const optimalLevel = getOptimalErrorCorrectionLevel(qrCodeLink);
+        qrCodeCorrectionLevelElement.value = correctionLevels.indexOf(optimalLevel);
+      }
+      const errorCorrection = correctionLevels[qrCodeCorrectionLevelElement.value];
       QRCode.toDataURL(qrCodeLink, {
         errorCorrectionLevel: errorCorrection,
         scale: 8
@@ -250,7 +297,10 @@ function renderOutput (activeModel, neuralOptions) {
     cleanNoteElement.style.display = "none";
   }
 }
-inputLinkElement.addEventListener("input", updateOutput);
+inputLinkElement.addEventListener("input", () => {
+  qrCorrectionManuallySet = false;
+  updateOutput();
+});
 
 (async () => {
   let payload = null;
