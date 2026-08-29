@@ -1,21 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { arithmeticEncode, arithmeticDecode } from "../arithmetic-coder.js";
+import { arithmeticEncode, arithmeticDecode } from "../docs/arithmetic-coder.js";
 import {
   URLModel,
   neuralCompressToNumber,
   neuralDecompressNumber,
   modelProbabilities,
   payloadVersion
-} from "../neural.js";
+} from "../docs/neural.js";
 import {
   compressHybrid,
   decompressHybrid,
   payloadSchemeVersion
-} from "../hybrid.js";
-import { compress, decompress, numberToString } from "../compress.js";
-import { outputAlphabetASCII, outputAlphabetQR } from "../alphabets.js";
+} from "../docs/hybrid.js";
+import { compress, decompress, numberToString } from "../docs/compress.js";
+import { outputAlphabetASCII, outputAlphabetQR } from "../docs/alphabets.js";
 
 /**
  * A deterministic mock model: probabilities depend on the last context
@@ -61,11 +61,11 @@ test("arithmetic coder approaches the model's entropy", () => {
 // The latest model (encodes payload version 3) and the archived v1
 // and v2 models (kept deployed so old links stay decodable)
 const model = new URLModel(
-  (await readFile(new URL("../model/url-model.bin", import.meta.url))).buffer);
+  (await readFile(new URL("../docs/model/url-model.bin", import.meta.url))).buffer);
 const modelV1 = new URLModel(
-  (await readFile(new URL("../model/url-model-v1.bin", import.meta.url))).buffer);
+  (await readFile(new URL("../docs/model/url-model-v1.bin", import.meta.url))).buffer);
 const modelV2 = new URLModel(
-  (await readFile(new URL("../model/url-model-v2.bin", import.meta.url))).buffer);
+  (await readFile(new URL("../docs/model/url-model-v2.bin", import.meta.url))).buffer);
 
 test("model files parse with expected dimensions and versions", () => {
   assert.equal(model.linkVersion, 3);
@@ -384,7 +384,7 @@ test("payload versions route to the matching model", async () => {
   // A future retrained model ships with the next linkVersion; its
   // payloads carry that version and refuse to decode with any other
   // model. This is the upgrade path that keeps old links working.
-  const raw = (await readFile(new URL("../model/url-model.bin", import.meta.url))).buffer;
+  const raw = (await readFile(new URL("../docs/model/url-model.bin", import.meta.url))).buffer;
   const modelNext = new URLModel(withLinkVersion(raw, 4));
   assert.equal(modelNext.linkVersion, 4);
 
@@ -553,7 +553,7 @@ test("chunked coding round-trips beyond-context URLs", () => {
 test("chunk framing degenerates to the v2 scheme for short URLs", async () => {
   // Bump the archived v2 model to version 3 (which enables chunking)
   // and compare content bits against the true v2 encoder
-  const raw = (await readFile(new URL("../model/url-model-v2.bin", import.meta.url))).buffer;
+  const raw = (await readFile(new URL("../docs/model/url-model-v2.bin", import.meta.url))).buffer;
   const chunkedModel = new URLModel(withLinkVersion(raw, 3));
   for (const link of ["https://www.example.com/some/path?a=1&b=2",
                       "https://en.wikipedia.org/wiki/Hammer"]) {

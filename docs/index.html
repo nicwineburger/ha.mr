@@ -4,6 +4,30 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ha.mr - link compressor</title>
+  <script>
+    /*
+     * Anchor relative URLs to the site root, so the site works from a
+     * domain root and from a base path (e.g. a GitHub Pages project
+     * site) alike. This page also serves as the 404 handler for QR
+     * payload paths, so its URL can be the base plus any payload:
+     * payload path segments use only the uppercase QR alphabet, while
+     * real base segments (like a repo name) contain characters
+     * outside it - which is where the base ends.
+     */
+    (function () {
+      let path = location.pathname;
+      // Resolve against the containing directory, like relative URLs do
+      if (!path.endsWith("/")) path = path.slice(0, path.lastIndexOf("/") + 1);
+      let base = "/";
+      for (const segment of path.split("/").filter(Boolean)) {
+        if (/^[$*+\-./:0-9A-Z]+$/.test(segment)) break;
+        base += segment + "/";
+      }
+      const element = document.createElement("base");
+      element.href = base;
+      document.head.appendChild(element);
+    })();
+  </script>
   <style>
     /* Self-hosted (see fonts/OFL.txt) - avoids a render-blocking
        third-party request on every visit, including redirects */
@@ -12,7 +36,7 @@
       font-style: normal;
       font-weight: 400;
       font-display: swap;
-      src: url("/fonts/hammersmith-one-latin.woff2") format("woff2");
+      src: url("./fonts/hammersmith-one-latin.woff2") format("woff2");
     }
     :root {
       color-scheme: light dark;
@@ -165,11 +189,11 @@
       cursor: pointer;
     }
   </style>
-  <script src="/qrcode.js"></script>
+  <script src="./qrcode.js"></script>
   <!-- Starts downloading before main.js (a deferred module script)
        even runs, so it's ready in parallel with the model fetch on
        the critical path to the first neural render. -->
-  <link rel="preload" href="/wasm/engine.wasm" as="fetch" crossorigin>
+  <link rel="preload" href="./wasm/engine.wasm" as="fetch" crossorigin>
 </head>
 <body>
 
@@ -228,6 +252,6 @@
 
   </div>
 
-  <script type="module" src="/main.js"></script>
+  <script type="module" src="./main.js"></script>
 </body>
 </html>

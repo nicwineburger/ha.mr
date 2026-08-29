@@ -4,7 +4,7 @@
   "description": "Compresses links and optimizes QR codes entirely in the browser, without a back-end database.",
   "type": "module",
   "bin": {
-    "hamr": "./standalone.js"
+    "hamr": "./docs/standalone.js"
   },
   "scripts": {
     "test": "node --test"

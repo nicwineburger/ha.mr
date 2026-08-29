@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const cli = fileURLToPath(new URL("../standalone.js", import.meta.url));
+const cli = fileURLToPath(new URL("../docs/standalone.js", import.meta.url));
 
 function run (...args) {
   return execFileSync(process.execPath, [cli, ...args], {
@@ -68,12 +68,12 @@ test("CLI treats domain-prefixed hostnames as links, not payloads", () => {
 test("CLI decodes links from archived model versions", async () => {
   // Version-1 links must keep decoding after the latest model moved
   // to version 2 - the CLI lazy-loads model/url-model-v1.bin
-  const { compressHybrid } = await import("../hybrid.js");
-  const { URLModel } = await import("../neural.js");
-  const { outputAlphabetASCII } = await import("../alphabets.js");
+  const { compressHybrid } = await import("../docs/hybrid.js");
+  const { URLModel } = await import("../docs/neural.js");
+  const { outputAlphabetASCII } = await import("../docs/alphabets.js");
   const { readFile } = await import("node:fs/promises");
   const modelV1 = new URLModel(
-    (await readFile(new URL("../model/url-model-v1.bin", import.meta.url))).buffer);
+    (await readFile(new URL("../docs/model/url-model-v1.bin", import.meta.url))).buffer);
   const link = "https://www.example.com/archived/version";
   const payload = compressHybrid(link, outputAlphabetASCII, modelV1);
   assert.equal(run(`https://ha.mr#${payload}`), link);

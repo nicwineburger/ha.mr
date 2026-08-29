@@ -16,7 +16,7 @@ import {
  * (the initial model, and any lazy-loaded archived model below) reuses
  * it without a second fetch or compile.
  */
-const wasmSource = wasmModuleSource(fetch("/wasm/engine.wasm").then(r => {
+const wasmSource = wasmModuleSource(fetch(new URL("wasm/engine.wasm", import.meta.url)).then(r => {
   if (!r.ok) throw `HTTP ${r.status}`;
   return r;
 }));
@@ -34,7 +34,7 @@ let model = null;
 let engine = null;
 const modelReady = (async () => {
   try {
-    const response = await fetch("/model/url-model.bin");
+    const response = await fetch(new URL("model/url-model.bin", import.meta.url));
     if (!response.ok) throw `HTTP ${response.status}`;
     model = new URLModel(await response.arrayBuffer());
     engine = await selectEngine(model, wasmSource);
@@ -46,20 +46,31 @@ const modelReady = (async () => {
 })();
 
 /**
- * The site adapts to whatever domain it's hosted on: output links and
- * the displayed title are derived from the current origin, so forks
- * don't need to change any code. When there's no usable origin (e.g.
- * the page was opened from disk), fall back to the canonical domain.
+ * The site adapts to wherever it's hosted: output links and the
+ * displayed title are derived from the current origin and base path,
+ * so forks don't need to change any code - a domain root and a
+ * subpath deployment (e.g. a GitHub Pages project site) both work.
+ * The directory main.js loads from IS the site root; that stays
+ * exact even when this page is served as the 404 handler for a QR
+ * payload path, where location alone can't tell base from payload.
+ * When there's no usable origin (e.g. the page was opened from
+ * disk), fall back to the canonical domain.
  */
 const isHosted = location.protocol === "http:" || location.protocol === "https:";
+const siteBase = new URL(".", import.meta.url);
+// "" at the domain root; "/sub/path" (no trailing slash) under one
+const sitePath = isHosted ? siteBase.pathname.replace(/\/$/, "") : "";
 const siteHost = (isHosted && location.host) || "ha.mr";
+// What a short link's prefix reads as, e.g. "ha.mr" or
+// "nicwineburger.github.io/ha.mr" - used for branding and the ratio
+const siteName = `${siteHost}${sitePath}`;
 const siteOrigin = isHosted && location.host
   ? `${location.protocol}//${location.host}`
   : `https://${siteHost}`;
 
-if (siteHost !== "ha.mr") {
-  document.title = `${siteHost} - link compressor`;
-  document.querySelector(".title").textContent = siteHost;
+if (siteName !== "ha.mr") {
+  document.title = `${siteName} - link compressor`;
+  document.querySelector(".title").textContent = siteName;
   // The pronunciation hint only makes sense for the original domain
   document.querySelector(".subtitle").style.display = "none";
 }
@@ -254,7 +265,7 @@ function renderOutput (activeModel, neuralOptions) {
     }
     // Overhead of the short link, not counting the protocol: the host
     // plus the "#" separator
-    const ratio = (1 - (countSymbols(output, alphabet) + siteHost.length + 1) / inputNormalized.length) * 100;
+    const ratio = (1 - (countSymbols(output, alphabet) + siteName.length + 1) / inputNormalized.length) * 100;
     if (ratio < -300) {
       outputRatioElement.textContent = `Output is much larger than the input`;
       outputRatioElement.style.color = "rgb(255, 50, 50)";
@@ -268,16 +279,19 @@ function renderOutput (activeModel, neuralOptions) {
       outputRatioElement.textContent = "Output is the same length as the input";
       outputRatioElement.style.color = "gray";
     }
-    outputLinkElement.textContent = `${siteOrigin}#${output}`;
-    outputLinkElement.href = `${siteOrigin}#${output}`;
+    outputLinkElement.textContent = `${siteOrigin}${sitePath}#${output}`;
+    outputLinkElement.href = `${siteOrigin}${sitePath}#${output}`;
     outputLinkElement.style.color = "";
     if (settings.qr) {
       const correctionLevels = ["L", "M", "Q", "H"];
       qrCodeImage.style.display = "inline";
       qrCodeCorrectionLevelContainer.style.display = "inline";
       // Uppercase keeps the QR code in alphanumeric mode; hostnames
-      // only contain [a-z0-9.-], which all fit that character set
-      let qrCodeLink = `HTTP://${siteHost.toUpperCase()}/${hybridPayload(input, outputAlphabetQR, activeModel, neuralOptions)}`;
+      // only contain [a-z0-9.-], which all fit that character set.
+      // A base path is case-sensitive on the server, so it stays
+      // verbatim - the QR library splits it into its own byte-mode
+      // segment automatically
+      let qrCodeLink = `HTTP://${siteHost.toUpperCase()}${sitePath}/${hybridPayload(input, outputAlphabetQR, activeModel, neuralOptions)}`;
       if (!qrCorrectionManuallySet) {
         const optimalLevel = getOptimalErrorCorrectionLevel(qrCodeLink);
         qrCodeCorrectionLevelElement.value = correctionLevels.indexOf(optimalLevel);
@@ -334,9 +348,13 @@ inputLinkElement.addEventListener("input", () => {
     const useEmoji = Array.from(payload).some(c => !outputAlphabetASCII.includes(c));
     alphabet = useEmoji ? outputAlphabetEmoji : outputAlphabetASCII;
   } else {
-    // If no hash value, we're likely reading a QR code
-    // For that, use the path instead
-    payload = decodeURIComponent(window.location.pathname.slice(1));
+    // If no hash value, we're likely reading a QR code - its payload
+    // rides in the path, after the site's own base path
+    const base = siteBase.pathname;
+    const pathname = window.location.pathname;
+    payload = decodeURIComponent(pathname.startsWith(base)
+      ? pathname.slice(base.length)
+      : pathname.slice(1));
     alphabet = outputAlphabetQR;
   }
 
@@ -358,7 +376,7 @@ inputLinkElement.addEventListener("input", () => {
         decodeModel = model;
         decodeEngine = engine;
         if (!decodeModel || decodeModel.linkVersion !== version) {
-          const response = await fetch(`/model/url-model-v${version}.bin`);
+          const response = await fetch(new URL(`model/url-model-v${version}.bin`, import.meta.url));
           if (!response.ok) throw `HTTP ${response.status} fetching model version ${version}`;
           decodeModel = new URLModel(await response.arrayBuffer());
           decodeEngine = await selectEngine(decodeModel, wasmSource);

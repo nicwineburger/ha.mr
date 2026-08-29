@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { compress, decompress } from "../compress.js";
+import { compress, decompress } from "../docs/compress.js";
 import {
   outputAlphabetASCII,
   outputAlphabetQR,
   outputAlphabetEmoji
-} from "../alphabets.js";
+} from "../docs/alphabets.js";
 
 const alphabets = {
   ascii: outputAlphabetASCII,
