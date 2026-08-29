@@ -101,10 +101,70 @@ const outputRatioElement = document.querySelector("#output-ratio");
 const queryWarningElement = document.querySelector("#query-warning");
 const cleanNoteElement = document.querySelector("#clean-note");
 
+const redirectContainerElement = document.querySelector("#redirect-container");
+const redirectLinkElement = document.querySelector("#redirect-link");
+document.querySelector("#redirect-button").addEventListener("click",
+  () => redirectLinkElement.click());
+
+/**
+ * Shows the decoded destination and waits for the user to confirm -
+ * a short link hides where it points until this moment, so it never
+ * navigates without showing the target first.
+ * @param {string} target Decoded destination link
+ */
+function showRedirectPrompt (target) {
+  redirectLinkElement.textContent = target;
+  redirectLinkElement.href = target;
+  document.querySelector("#loader").style.display = "none";
+  redirectContainerElement.style.display = "flex";
+}
+
 const qrCodeImage = document.querySelector("#qrcode");
 const qrCodeCorrectionLevelContainer = document.querySelector("#qr-correct-level-container");
 const qrCodeCorrectionLevelElement = document.querySelector("#qr-correct-level");
-qrCodeCorrectionLevelElement.addEventListener("change", updateOutput);
+
+// The error correction level is picked automatically per link until
+// the user touches the slider; typing a new link hands control back
+let qrCorrectionManuallySet = false;
+
+qrCodeCorrectionLevelElement.addEventListener("change", () => {
+  qrCorrectionManuallySet = true;
+  updateOutput();
+});
+
+/**
+ * Picks the strongest error correction level that doesn't grow the QR
+ * code: robustness within the version the payload needs anyway.
+ * @param {string} text Full QR code contents
+ * @returns {string} Error correction level ("M", "Q" or "H")
+ */
+function getOptimalErrorCorrectionLevel (text) {
+  const levels = ["M", "Q", "H"];
+
+  const baseVersion = QRCode.create(text, {
+    errorCorrectionLevel: levels[0]
+  }).version;
+
+  let optimalLevel = levels[0];
+
+  for (const level of levels.slice(1)) {
+    try {
+      const candidate = QRCode.create(text, {
+        errorCorrectionLevel: level
+      });
+
+      if (candidate.version > baseVersion) {
+        break;
+      }
+
+      optimalLevel = level;
+    } catch {
+      break;
+    }
+  }
+
+  return optimalLevel;
+}
 
 /**
  * Neural encoding takes a few hundred milliseconds, too slow to run on
@@ -174,9 +234,10 @@ function renderOutput (activeModel, neuralOptions) {
     const alphabet = settings.emoji ? outputAlphabetEmoji : outputAlphabetASCII;
     const output = hybridPayload(input, alphabet, activeModel, neuralOptions);
     let inputNormalized = input;
-    if (input.startsWith("https://")) {
+    const inputLower = input.toLowerCase();
+    if (inputLower.startsWith("https://")) {
       inputNormalized = input.slice(8);
-    } else if (input.startsWith("http://")) {
+    } else if (inputLower.startsWith("http://")) {
       inputNormalized = input.slice(7);
     }
     let excessiveParams = false;
@@ -211,12 +272,17 @@ function renderOutput (activeModel, neuralOptions) {
     outputLinkElement.href = `${siteOrigin}#${output}`;
     outputLinkElement.style.color = "";
     if (settings.qr) {
-      const errorCorrection = ["L", "M", "Q", "H"][qrCodeCorrectionLevelElement.value];
+      const correctionLevels = ["L", "M", "Q", "H"];
       qrCodeImage.style.display = "inline";
       qrCodeCorrectionLevelContainer.style.display = "inline";
       // Uppercase keeps the QR code in alphanumeric mode; hostnames
       // only contain [a-z0-9.-], which all fit that character set
       let qrCodeLink = `HTTP://${siteHost.toUpperCase()}/${hybridPayload(input, outputAlphabetQR, activeModel, neuralOptions)}`;
+      if (!qrCorrectionManuallySet) {
+        const optimalLevel = getOptimalErrorCorrectionLevel(qrCodeLink);
+        qrCodeCorrectionLevelElement.value = correctionLevels.indexOf(optimalLevel);
+      }
+      const errorCorrection = correctionLevels[qrCodeCorrectionLevelElement.value];
       QRCode.toDataURL(qrCodeLink, {
         errorCorrectionLevel: errorCorrection,
         scale: 8
@@ -249,7 +315,10 @@ function renderOutput (activeModel, neuralOptions) {
     cleanNoteElement.style.display = "none";
   }
 }
-inputLinkElement.addEventListener("input", updateOutput);
+inputLinkElement.addEventListener("input", () => {
+  qrCorrectionManuallySet = false;
+  updateOutput();
+});
 
 (async () => {
   let payload = null;
@@ -296,7 +365,7 @@ inputLinkElement.addEventListener("input", updateOutput);
         }
       }
       const target = decompressHybrid(payload, alphabet, decodeModel, decodeEngine);
-      window.location.href = target;
+      showRedirectPrompt(target);
       return;
     } catch (e) {
       console.warn(`Redirect failed. Could not decode input.`);

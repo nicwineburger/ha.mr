@@ -152,6 +152,76 @@ function huffmanDecode (number, lookup) {
 }
 
 /**
+ * Converts a 128-bit integer to a compressed IPv6 address.
+ * Matches the WHATWG URL serialization (RFC 5952): lowercase hex,
+ * "::" for the leftmost longest run of two or more zero hextets - so
+ * decode output equals what the URL parser produced at encode time.
+ * @param {BigInt} number 128-bit IPv6 value
+ * @returns {string} IPv6 address without square brackets
+ */
+function numberToIPv6 (number) {
+  const hextets = [];
+
+  for (let i = 0; i < 8; i ++) {
+    hextets.unshift((number & 0xffffn).toString(16));
+    number >>= 16n;
+  }
+
+  let bestStart = -1;
+  let bestLength = 0;
+  let start = -1;
+
+  for (let i = 0; i <= hextets.length; i ++) {
+    if (i < hextets.length && hextets[i] === "0") {
+      if (start === -1) start = i;
+    } else if (start !== -1) {
+      const length = i - start;
+
+      if (length > bestLength && length > 1) {
+        bestStart = start;
+        bestLength = length;
+      }
+
+      start = -1;
+    }
+  }
+
+  if (bestStart === -1) return hextets.join(":");
+
+  const left = hextets.slice(0, bestStart).join(":");
+  const right = hextets.slice(bestStart + bestLength).join(":");
+
+  return `${left}::${right}`;
+}
+
+/**
+ * Converts an IPv6 address to its 128-bit integer representation.
+ * @param {string} input IPv6 address without square brackets
+ * @returns {BigInt} 128-bit IPv6 value
+ */
+function ipv6ToNumber (input) {
+  const halves = input.split("::");
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves[1] ? halves[1].split(":") : [];
+
+  const missing = 8 - left.length - right.length;
+  const hextets = [
+    ...left,
+    ...Array(missing).fill("0"),
+    ...right
+  ];
+
+  let number = 0n;
+
+  for (const hextet of hextets) {
+    number <<= 16n;
+    number += BigInt(`0x${hextet || "0"}`);
+  }
+
+  return number;
+}
+
+/**
  * Compresses the input link and encodes it to the given alphabet.
  * @param {string} input Link to compress
  * @param {string[]} alphabet Output alphabet as array of characters/strings
@@ -178,18 +248,20 @@ export function compressToNumber (input) {
   }
 
   let hostname = url.hostname.toLowerCase();
+  const isIPv6 = hostname.startsWith("[") && hostname.endsWith("]");
   const port = BigInt(url.port);
-  const tld = hostname.includes(".") && hostname.split(".").at(-1).toLowerCase();
+  const tld = !isIPv6 && hostname.includes(".") &&
+    hostname.split(".").at(-1).toLowerCase();
 
   if (tld in tldEncode) {
     hostname = hostname.split(".").slice(0, -1).join(".");
   }
 
   const isHTTPS = url.protocol === "https:";
-  const hasWWW = url.hostname.toLowerCase().startsWith("www.");
+  const hasWWW = !isIPv6 && url.hostname.toLowerCase().startsWith("www.");
   if (hasWWW) hostname = hostname.slice(4);
 
-  const knownSLD = sldList.find(c => hostname.endsWith(c)) || "";
+  const knownSLD = !isIPv6 && sldList.find(c => hostname.endsWith(c)) || "";
   const subdomain = hostname.slice(0, -knownSLD.length);
 
   // Read URL path, split it into segments
@@ -218,10 +290,24 @@ export function compressToNumber (input) {
     pathSegments.push({ type: "path", value: "" });
   }
 
-  // Add search/query parameters to path segments
-  let queryParams = Array.from(url.searchParams)
-    .flat()
-    .map(c => ({ type: "query", value: c }));
+  // Add search/query parameters to path segments. The raw search
+  // string is split by hand: url.searchParams decodes values, which
+  // turns e.g. "a=x%26y" into a second "y" parameter on decode and
+  // rewrites "+" as "%20".
+  const queryParams = url.search
+    ? url.search.slice(1)
+      .split("&")
+      .flatMap(parameter => {
+        const separatorIndex = parameter.indexOf("=");
+        return separatorIndex === -1
+          ? [parameter, ""]
+          : [
+              parameter.slice(0, separatorIndex),
+              parameter.slice(separatorIndex + 1)
+            ];
+      })
+      .map(value => ({ type: "query", value }))
+    : [];
   pathSegments.push(...queryParams);
 
   // Add hash value to path segments
@@ -229,24 +315,39 @@ export function compressToNumber (input) {
     pathSegments.push({ type: "hash", value: url.hash.slice(1) });
   }
 
-  // Normalize path segment encoding
-  for (const segment of pathSegments) {
-    // Escape stray "%" characters that aren't part of a valid escape
-    // sequence - browsers tolerate them, but decodeURI throws
-    segment.value = segment.value.replace(/%(?![0-9a-fA-F]{2})/g, "%25");
+  // Escapes of reserved characters (#$&+,/:;=?@) can't be normalized:
+  // decodeURI leaves them as literal "%XX" text, so encodeURI would
+  // double-encode the "%" and change which URL the link points to.
+  // They pass through verbatim (hex uppercased to match the decoder).
+  const reservedEscape = /(%(?:23|24|26|2B|2C|2F|3A|3B|3D|3F|40))/gi;
+
+  function normalizeSegmentPart (part) {
     try {
-      segment.value = encodeURI(decodeURI(segment.value));
+      return encodeURI(decodeURI(part));
     } catch (e) {
       // Hex-valid escapes that don't form valid UTF-8 (e.g. a lone
       // "%C3") also throw. Keep those escapes verbatim and normalize
       // only the literal characters between them.
-      segment.value = segment.value
+      return part
         .split(/(%[0-9a-fA-F]{2})/)
-        .map(part => /^%[0-9a-fA-F]{2}$/.test(part)
-          ? part.toUpperCase()
-          : encodeURI(part))
+        .map(piece => /^%[0-9a-fA-F]{2}$/.test(piece)
+          ? piece.toUpperCase()
+          : encodeURI(piece))
         .join("");
     }
+  }
+
+  // Normalize path segment encoding, preserving escaped reserved characters
+  for (const segment of pathSegments) {
+    // Escape stray "%" characters that aren't part of a valid escape
+    // sequence - browsers tolerate them, but decodeURI throws
+    segment.value = segment.value.replace(/%(?![0-9a-fA-F]{2})/g, "%25");
+    segment.value = segment.value
+      .split(reservedEscape)
+      .map((part, index) => index % 2 === 1
+        ? part.toUpperCase()
+        : normalizeSegmentPart(part))
+      .join("");
   }
 
   // Encode path following domain segment-by-segment, using best algorithm for each
@@ -277,9 +378,9 @@ export function compressToNumber (input) {
       queryParamIndex ++;
     }
     // Look for smallest subalphabet that fits this path segment
-    let subalphabetIndex = subalphabets.length - 1;
-    let subalphabet = subalphabets[subalphabetIndex];
-    for (let i = 0; i < subalphabets.length - 1; i ++) {
+    let subalphabetIndex = -1;
+    let subalphabet = null;
+    for (let i = 0; i < subalphabets.length; i ++) {
       if (!Array.from(segment.value).some(c => !subalphabets[i].includes(c))) {
         subalphabet = subalphabets[i];
         subalphabetIndex = i;
@@ -315,6 +416,13 @@ export function compressToNumber (input) {
     // Encode segment variant as 0
     // (We're adding +1 here to introduce 0 as a special value indicating Huffman)
     huffmanNumber *= BigInt(subalphabets.length + 1);
+    // If no subalphabet fits this segment, Huffman is the only option.
+    // Encoding a character missing from the subalphabet would produce
+    // the value 0, which the decoder treats as the end of the segment.
+    if (!subalphabet) {
+      number = huffmanNumber;
+      continue;
+    }
     // Compute number after encoding with chosen subalphabet
     const subalphabetLength = BigInt(subalphabet.length + 1);
     let subalphabetNumber = firstIteration ? number : number * subalphabetLength;
@@ -343,8 +451,17 @@ export function compressToNumber (input) {
     }
   }
 
-  // Encode either SLD + subdomain or full hostname
-  if (!knownSLD) {
+  // Encode IPv6 literal, SLD + subdomain, or full hostname
+  if (isIPv6) {
+    const ipv6Number = ipv6ToNumber(hostname.slice(1, -1));
+
+    number <<= 128n;
+    number += ipv6Number;
+
+    // An END as the first hostname symbol marks an IPv6 literal - a
+    // hostname is never empty, so no pre-IPv6 payload decodes here
+    number = huffmanEncode(number, domainEncode["END"]);
+  } else if (!knownSLD) {
     // Write stopping token only if path follows
     if (pathSegments.length > 0) number = huffmanEncode(number, domainEncode["END"]);
     for (let i = hostname.length - 1; i >= 0; i --) {
@@ -484,11 +601,25 @@ export function decompressNumber (number) {
       }
     }
   } else {
-    while (number > 1n) {
-      const { newNumber, digit } = huffmanDecode(number, domainDecode);
-      number = newNumber;
-      if (digit === "END") break;
+    const { newNumber, digit } = huffmanDecode(number, domainDecode);
+    number = newNumber;
+
+    if (digit === "END") {
+      // An END before any hostname character marks an IPv6 literal
+      // (see the encoder); its 128 bits follow
+      const ipv6Number = number & ((1n << 128n) - 1n);
+      number >>= 128n;
+
+      domain = `[${numberToIPv6(ipv6Number)}]`;
+    } else {
       domain += digit;
+
+      while (number > 1n) {
+        const { newNumber, digit } = huffmanDecode(number, domainDecode);
+        number = newNumber;
+        if (digit === "END") break;
+        domain += digit;
+      }
     }
   }
 
